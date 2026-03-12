@@ -25,7 +25,11 @@ __pycache__/
 .idea
 *.log
 *.bak
-
+logs/
+*.pdf
+.claude/
+docs/
+CLAUDE.md
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

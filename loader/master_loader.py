@@ -17,6 +17,7 @@ from torch_geometric.datasets import (Amazon, Coauthor, GNNBenchmarkDataset)
 from torch_geometric.loader import DataLoader
 
 from loader.dataset.coco_superpixels import COCOSuperpixels
+from loader.dataset.kg_dataset import create_kg_datasets
 from loader.dataset.malnet_tiny import MalNetTiny
 from loader.dataset.voc_superpixels import VOCSuperpixels
 from loader.split_generator import prepare_splits, set_dataset_splits
@@ -83,6 +84,33 @@ def _cache_load(dataset, cache_path):
 
 
 # ---------------------------------------------------------------------------
+# KGC split wrapper
+# ---------------------------------------------------------------------------
+
+class KGCSplitWrapper:
+    """
+    Thin wrapper around three KGCDataset splits.
+
+    Satisfies the load_dataset() return-type contract:
+      - dataset[idx]  → Data object (from train split, used by infer_dims)
+      - len(dataset)  → number of training queries
+      - dataset.train_ds / .val_ds / .test_ds  → accessed by create_loaders()
+    """
+    def __init__(self, train_ds, val_ds, test_ds):
+        self.train_ds      = train_ds
+        self.val_ds        = val_ds
+        self.test_ds       = test_ds
+        self.num_entities  = train_ds.num_entities
+        self.num_relations = train_ds.num_relations
+
+    def __getitem__(self, idx):
+        return self.train_ds[idx]
+
+    def __len__(self):
+        return len(self.train_ds)
+
+
+# ---------------------------------------------------------------------------
 # Dataset format dispatch
 # ---------------------------------------------------------------------------
 
@@ -94,6 +122,23 @@ def load_dataset(cfg):
     fmt = cfg.dataset.format
     name = cfg.dataset.name
     dataset_dir = cfg.dataset.dir
+
+    # KGC datasets manage their own subgraph extraction and expander edges
+    # per query in __getitem__ — skip the shared PE/expander pipeline entirely.
+    if fmt == 'KGC':
+        train_ds, val_ds, test_ds = create_kg_datasets(dataset_dir, cfg)
+        cfg.defrost()
+        cfg.dataset.num_entities  = train_ds.num_entities
+        cfg.dataset.num_relations = train_ds.num_relations
+        cfg.freeze()
+        logging.info(
+            f"[*] Loaded KGC dataset '{name}': "
+            f"{train_ds.num_entities} entities, "
+            f"{train_ds.num_relations} relations "
+            f"(reciprocal={cfg.kgc.reciprocal}), "
+            f"{len(train_ds)} train / {len(val_ds)} val / {len(test_ds)} test queries"
+        )
+        return KGCSplitWrapper(train_ds, val_ds, test_ds)
 
     if fmt.startswith('PyG-'):
         pyg_id = fmt.split('-', 1)[1]
@@ -215,6 +260,21 @@ def create_loaders(cfg, dataset):
     """
     name = cfg.dataset.name
     bs = cfg.train.batch_size
+
+    # KGC: three pre-split datasets, each is a torch Dataset of subgraph Data objects.
+    # persistent_workers=True keeps worker processes alive between epochs so each
+    # worker retains its _subgraph_cache, making warm epochs ~100× faster when
+    # combined with prep.exp_check_spectral=False.
+    if isinstance(dataset, KGCSplitWrapper):
+        nw = 4
+        return [
+            DataLoader(dataset.train_ds, batch_size=bs, shuffle=True,
+                       num_workers=nw, persistent_workers=True),
+            DataLoader(dataset.val_ds,   batch_size=bs, shuffle=False,
+                       num_workers=nw, persistent_workers=True),
+            DataLoader(dataset.test_ds,  batch_size=bs, shuffle=False,
+                       num_workers=nw, persistent_workers=True),
+        ]
 
     if name in ('ogbn-arxiv', 'ogbn-proteins'):
         # Single-graph transductive: same dataset replicated 3×

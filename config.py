@@ -39,6 +39,8 @@ cfg.dataset.slic_compactness = 10
 cfg.dataset.dir = './datasets'
 cfg.dataset.node_encoder_num_types = 0
 cfg.dataset.edge_encoder_num_types = 0
+cfg.dataset.num_entities  = 0   # set at load time for KGC datasets
+cfg.dataset.num_relations = 0   # set at load time (includes inverse relations)
 
 # ---------------------------------------------------------------------------
 # Model
@@ -62,6 +64,8 @@ cfg.gt.attn_dropout = 0.0
 cfg.gt.layer_norm = False
 cfg.gt.batch_norm = True
 cfg.gt.dim_edge = None             # None → will be set equal to dim_hidden
+cfg.gt.use_edge_gating = False          # relation-conditioned V gate in Exphormer attention
+cfg.gt.use_query_conditioning = False   # condition attention on query relation (KGC)
 cfg.gt.pna_degrees = []
 cfg.gt.bigbird = CN()              # kept for compat but not used
 cfg.gt.bigbird.attention_type = 'block_sparse'
@@ -94,6 +98,7 @@ cfg.prep.exp_algorithm = 'Random-d'
 cfg.prep.exp_deg = 5
 cfg.prep.exp_count = 1
 cfg.prep.exp_max_num_iters = 100
+cfg.prep.exp_check_spectral = True  # False skips eigenvalue check (~100× faster)
 cfg.prep.add_edge_index = True
 cfg.prep.num_virt_node = 0
 cfg.prep.use_exp_edges = True
@@ -187,6 +192,8 @@ cfg.train.epoch_resume = -1
 cfg.train.enable_ckpt = False
 cfg.train.ckpt_best = False
 cfg.train.ckpt_clean = True
+cfg.train.max_iter = 0          # 0 = no limit; set >0 to stop after N batches (debug)
+cfg.train.grad_checkpoint = False  # True: per-layer gradient checkpointing (saves memory)
 
 # ---------------------------------------------------------------------------
 # WandB
@@ -196,6 +203,20 @@ cfg.wandb.use = False
 cfg.wandb.entity = 'entity'
 cfg.wandb.project = 'project'
 cfg.wandb.name = ''
+
+# ---------------------------------------------------------------------------
+# Knowledge Graph Completion (KGC)
+# ---------------------------------------------------------------------------
+cfg.kgc = CN()
+cfg.kgc.reciprocal       = True   # add (t, r+|R|, h) for every training (h, r, t)
+cfg.kgc.subgraph_hops    = 2      # k-hop subgraph depth for training queries
+cfg.kgc.max_nodes        = 500    # max nodes per subgraph (random drop if exceeded)
+cfg.kgc.eval_full_graph  = True   # True: eval on full KG; False: eval on large subgraph
+cfg.kgc.eval_batch_size  = 1      # queries per forward pass during full-graph eval
+cfg.kgc.train_full_graph      = False  # True: NBFNet-style full-graph training
+cfg.kgc.train_batch_size      = 4      # queries per forward pass during full-graph training
+cfg.kgc.train_steps_per_epoch = 200    # gradient steps per epoch (mini-epoch strategy)
+cfg.kgc.label_smoothing       = 0.0   # label smoothing for CE loss (0 = no smoothing)
 
 # ---------------------------------------------------------------------------
 # Shared / internal (used by LapPE encoder for dim_in)

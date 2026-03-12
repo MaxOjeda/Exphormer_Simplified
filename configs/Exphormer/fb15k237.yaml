@@ -1,0 +1,77 @@
+dataset:
+  format: KGC
+  name: FB15k-237
+  dir: ./datasets
+  task: link_pred
+  task_type: kgc_ranking
+  node_encoder: True
+  node_encoder_name: KGCNode
+  node_encoder_bn: False   # BN on zeros+one-hot init would suppress the signal
+  edge_encoder: True
+  edge_encoder_name: RelationEmbedding
+  edge_encoder_bn: False
+
+kgc:
+  reciprocal: True
+  subgraph_hops: 2
+  max_nodes: 500
+  eval_full_graph: True
+  eval_batch_size: 4    # FB15k-237 has ~1M edges; 8×E×B tensors → limit B
+
+gt:
+  layer_type: CustomGatedGCN+Exphormer
+  layers: 6
+  n_heads: 8
+  dim_hidden: 256
+  dim_edge: 256
+  dropout: 0.1
+  attn_dropout: 0.1
+  layer_norm: False
+  batch_norm: True
+  use_edge_gating: True   # relation-conditioned V gate
+
+gnn:
+  head: kgc
+  layers_pre_mp: 0
+  layers_post_mp: 0
+  dim_inner: 256
+  dropout: 0.1
+
+prep:
+  exp: True
+  exp_deg: 3
+  exp_algorithm: Random-d
+  exp_max_num_iters: 100
+  exp_check_spectral: False   # skip eigenvalue loop: ~100× faster per-subgraph
+  add_edge_index: True
+  num_virt_node: 0
+
+posenc_LapPE:
+  enable: False
+posenc_EquivStableLapPE:
+  enable: False
+
+optim:
+  optimizer: adamW
+  base_lr: 0.0001
+  weight_decay: 1.0e-4
+  max_epoch: 200
+  scheduler: cosine_with_warmup
+  num_warmup_epochs: 10
+
+train:
+  batch_size: 256
+  eval_period: 5
+  ckpt_period: 25
+  enable_ckpt: True
+  ckpt_best: True
+
+model:
+  type: MultiModel
+  loss_fun: cross_entropy
+
+metric_best: mrr
+metric_agg: argmax
+
+wandb:
+  use: False

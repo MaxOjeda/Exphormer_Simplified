@@ -86,10 +86,12 @@ class LocalModel(nn.Module):
         self.local_gnn_type = local_gnn_type
 
         if local_gnn_type == 'CustomGatedGCN':
+            gnn_norm_type = 'layer' if layer_norm else ('batch' if batch_norm else 'none')
             self.local_model = GatedGCNLayer(dim_h, dim_h,
                                              dropout=dropout,
                                              residual=True,
-                                             equivstable_pe=equivstable_pe)
+                                             equivstable_pe=equivstable_pe,
+                                             norm_type=gnn_norm_type)
         elif local_gnn_type == 'GCN':
             self.local_model = pygnn.GCNConv(dim_h, dim_h)
         elif local_gnn_type == 'GINE':
@@ -153,7 +155,9 @@ class GlobalModel(nn.Module):
     """Wraps the Exphormer global sparse attention layer."""
 
     def __init__(self, dim_h, num_heads, dropout=0.0, attn_dropout=0.0,
-                 layer_norm=False, batch_norm=True, exp_edges_cfg=None):
+                 layer_norm=False, batch_norm=True, exp_edges_cfg=None,
+                 use_edge_gating=False, use_query_conditioning=False,
+                 num_relations=None):
         super().__init__()
         self.dim_h = dim_h
         self.layer_norm = layer_norm
@@ -162,7 +166,10 @@ class GlobalModel(nn.Module):
         use_virt = (exp_edges_cfg is not None and exp_edges_cfg.num_virt_node > 0)
         self.self_attn = ExphormerAttention(dim_h, dim_h, num_heads,
                                             use_bias=False,
-                                            use_virt_nodes=use_virt)
+                                            use_virt_nodes=use_virt,
+                                            use_edge_gating=use_edge_gating,
+                                            use_query_conditioning=use_query_conditioning,
+                                            num_relations=num_relations)
 
         if layer_norm and batch_norm:
             raise ValueError("Cannot use both layer_norm and batch_norm.")
@@ -199,7 +206,9 @@ class MultiLayer(nn.Module):
 
     def __init__(self, dim_h, model_types, num_heads,
                  equivstable_pe=False, dropout=0.0, attn_dropout=0.0,
-                 layer_norm=False, batch_norm=True, exp_edges_cfg=None):
+                 layer_norm=False, batch_norm=True, exp_edges_cfg=None,
+                 use_edge_gating=False, use_query_conditioning=False,
+                 num_relations=None):
         super().__init__()
         self.dim_h = dim_h
         self.layer_norm = layer_norm
@@ -227,7 +236,10 @@ class MultiLayer(nn.Module):
                     dim_h=dim_h, num_heads=num_heads,
                     dropout=dropout, attn_dropout=attn_dropout,
                     layer_norm=layer_norm, batch_norm=batch_norm,
-                    exp_edges_cfg=exp_edges_cfg))
+                    exp_edges_cfg=exp_edges_cfg,
+                    use_edge_gating=use_edge_gating,
+                    use_query_conditioning=use_query_conditioning,
+                    num_relations=num_relations))
             elif layer_type in ('CustomGatedGCN', 'GCN', 'GINE', 'GAT'):
                 models.append(LocalModel(
                     dim_h=dim_h, local_gnn_type=layer_type,
@@ -304,6 +316,8 @@ class MultiModel(nn.Module):
              f"({cfg.gt.dim_hidden}). Check node encoder output dim or layers_pre_mp.")
 
         model_types = cfg.gt.layer_type.split('+')
+        use_query_cond = getattr(cfg.gt, 'use_query_conditioning', False)
+        num_relations  = cfg.dataset.num_relations if use_query_cond else None
         self.layers = nn.Sequential(*[
             MultiLayer(
                 dim_h=cfg.gt.dim_hidden,
@@ -314,17 +328,42 @@ class MultiModel(nn.Module):
                 attn_dropout=cfg.gt.attn_dropout,
                 layer_norm=cfg.gt.layer_norm,
                 batch_norm=cfg.gt.batch_norm,
-                exp_edges_cfg=cfg.prep)
+                exp_edges_cfg=cfg.prep,
+                use_edge_gating=cfg.gt.use_edge_gating,
+                use_query_conditioning=use_query_cond,
+                num_relations=num_relations)
             for _ in range(cfg.gt.layers)
         ])
 
         self.post_mp = build_head(cfg, cfg.gnn.dim_inner, dim_out)
+        self.grad_checkpoint = getattr(cfg.train, 'grad_checkpoint', False)
 
     def forward(self, batch):
         batch = self.encoder(batch)
         if hasattr(self, 'pre_mp'):
             batch.x = self.pre_mp(batch.x)
-        batch = self.layers(batch)
+
+        if self.training and self.grad_checkpoint:
+            from torch.utils.checkpoint import checkpoint
+            for layer in self.layers:
+                # Checkpoint boundary: save (x, edge_attr) between layers.
+                # expander_edge_index/attr and other batch attrs are captured
+                # by reference and stay alive for recomputation.
+                x_in = batch.x
+                ea_in = batch.edge_attr
+
+                def _run(x, ea, _layer=layer, _batch=batch):
+                    _batch.x = x
+                    _batch.edge_attr = ea
+                    result = _layer(_batch)
+                    return result.x, result.edge_attr
+
+                x_out, ea_out = checkpoint(_run, x_in, ea_in, use_reentrant=False)
+                batch.x = x_out
+                batch.edge_attr = ea_out
+        else:
+            batch = self.layers(batch)
+
         return self.post_mp(batch)
 
 

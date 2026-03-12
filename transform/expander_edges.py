@@ -47,9 +47,17 @@ def generate_random_graph_with_hamiltonian_cycles(num_nodes, degree, rng=None):
 
 
 def generate_random_expander(data, degree, algorithm, rng=None,
-                              max_num_iters=100, exp_index=0):
+                              max_num_iters=100, exp_index=0,
+                              check_spectral=True):
     """
     Generates a random d-regular expander graph and attaches it to data.
+
+    Args:
+        check_spectral: If True (default), run the Alon-Boppana eigenvalue loop
+            to select the best expander from up to max_num_iters candidates.
+            If False, generate exactly one random d-regular graph without any
+            spectral quality check — ~100× faster, suitable for per-subgraph
+            generation in KGC where subgraphs change every epoch.
     """
     num_nodes = data.num_nodes
 
@@ -73,28 +81,45 @@ def generate_random_expander(data, degree, algorithm, rng=None,
                     max_senders.append(i)
                     max_receivers.append(j)
     else:
-        while eig_val < eig_val_lower_bound and cur_iter <= max_num_iters:
+        if not check_spectral:
+            # Skip eigenvalue check: generate one random d-regular graph directly.
+            # This is ~100× faster than the spectral loop and acceptable for
+            # per-subgraph KGC use (different subgraph every iteration anyway).
             if algorithm == 'Random-d':
-                senders, receivers = generate_random_regular_graph1(num_nodes, degree, rng)
+                max_senders, max_receivers = generate_random_regular_graph1(
+                    num_nodes, degree, rng)
             elif algorithm == 'Random-d-2':
-                senders, receivers = generate_random_regular_graph2(num_nodes, degree, rng)
+                max_senders, max_receivers = generate_random_regular_graph2(
+                    num_nodes, degree, rng)
             elif algorithm == 'Hamiltonian':
-                senders, receivers = generate_random_graph_with_hamiltonian_cycles(num_nodes, degree, rng)
+                max_senders, max_receivers = \
+                    generate_random_graph_with_hamiltonian_cycles(num_nodes, degree, rng)
             else:
                 raise ValueError('prep.exp_algorithm must be one of: Random-d, Hamiltonian')
+        else:
+            while eig_val < eig_val_lower_bound and cur_iter <= max_num_iters:
+                if algorithm == 'Random-d':
+                    senders, receivers = generate_random_regular_graph1(num_nodes, degree, rng)
+                elif algorithm == 'Random-d-2':
+                    senders, receivers = generate_random_regular_graph2(num_nodes, degree, rng)
+                elif algorithm == 'Hamiltonian':
+                    senders, receivers = generate_random_graph_with_hamiltonian_cycles(
+                        num_nodes, degree, rng)
+                else:
+                    raise ValueError('prep.exp_algorithm must be one of: Random-d, Hamiltonian')
 
-            [eig_val, _] = laplacian_eigenv(senders, receivers, k=1, n=num_nodes)
-            if len(eig_val) == 0:
-                eig_val = 0
-            else:
-                eig_val = eig_val[0]
+                [eig_val, _] = laplacian_eigenv(senders, receivers, k=1, n=num_nodes)
+                if len(eig_val) == 0:
+                    eig_val = 0
+                else:
+                    eig_val = eig_val[0]
 
-            if eig_val > max_eig_val_so_far:
-                max_eig_val_so_far = eig_val
-                max_senders = senders
-                max_receivers = receivers
+                if eig_val > max_eig_val_so_far:
+                    max_eig_val_so_far = eig_val
+                    max_senders = senders
+                    max_receivers = receivers
 
-            cur_iter += 1
+                cur_iter += 1
 
     # Remove self-loops
     non_loops = [

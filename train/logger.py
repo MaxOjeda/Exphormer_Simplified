@@ -69,6 +69,7 @@ class CustomLogger:
         self._size_current = 0
         self._iter = 0
         self._custom_stats = {}
+        self._kgc_ranks = []   # filtered ranks accumulated during KGC eval
 
     def reset(self):
         self._reset()
@@ -90,6 +91,29 @@ class CustomLogger:
                 self._custom_stats[key] = val * batch_size
             else:
                 self._custom_stats[key] += val * batch_size
+
+    def update_stats_kgc(self, ranks, time_used, lr=0.0, params=0):
+        """
+        Accumulate per-query filtered ranks for KGC full-graph evaluation.
+
+        Called once per batch of queries during eval_epoch_kgc.
+
+        Args:
+            ranks (list[int] | Tensor): filtered rank of the true answer for
+                each query in the batch (1-indexed: rank=1 means top prediction).
+            time_used (float): wall time for this batch.
+            lr (float): current learning rate.
+            params (int): number of model parameters.
+        """
+        if isinstance(ranks, torch.Tensor):
+            ranks = ranks.tolist()
+        n = len(ranks)
+        self._kgc_ranks.extend(ranks)
+        self._size_current += n
+        self._iter += 1
+        self._time_used += time_used
+        self._lr = lr
+        self._params = params
 
     def _get_pred_int(self, pred_score):
         if pred_score.ndim == 1 or pred_score.shape[1] == 1:
@@ -169,6 +193,43 @@ class CustomLogger:
             'rmse': reformat(mean_squared_error(true, pred, squared=False)),
         }
 
+    def kgc_ranking(self):
+        """
+        Filtered MRR and Hits@K from accumulated per-query ranks.
+        Called during full-graph KGC evaluation (val / test).
+        """
+        reformat = lambda x: round(float(x), max(8, self.cfg.round if self.cfg else 5))
+        ranks = torch.tensor(self._kgc_ranks, dtype=torch.float)
+        if len(ranks) == 0:
+            return {'mrr': 0.0, 'hits@1': 0.0, 'hits@3': 0.0, 'hits@10': 0.0}
+        return {
+            'mrr':     reformat((1.0 / ranks).mean().item()),
+            'hits@1':  reformat((ranks <= 1).float().mean().item()),
+            'hits@3':  reformat((ranks <= 3).float().mean().item()),
+            'hits@10': reformat((ranks <= 10).float().mean().item()),
+        }
+
+    def kgc_train_approx(self):
+        """
+        Training-time approximation: Hits@1 within the subgraph.
+        Uses the padded log-softmax scores accumulated via update_stats().
+        Not comparable to filtered eval metrics — used only to track
+        whether the model is learning to rank the answer first locally.
+
+        Note: different batches may have different max_N (max nodes in batch),
+        so we compute argmax per-batch before concatenating the 1-D hit flags.
+        """
+        reformat = lambda x: round(float(x), max(8, self.cfg.round if self.cfg else 5))
+        hit_flags = []
+        for pred_batch, true_batch in zip(self._pred, self._true):
+            # pred_batch: (B, max_N_i), true_batch: (B,)
+            pred_int = pred_batch.argmax(dim=-1)   # (B,)
+            hit_flags.append((pred_int == true_batch).float())
+        if not hit_flags:
+            return {'subgraph_hits@1': 0.0}
+        hit1 = torch.cat(hit_flags).mean().item()
+        return {'subgraph_hits@1': reformat(hit1)}
+
     # ------------------------------------------------------------------
     # Epoch summary
     # ------------------------------------------------------------------
@@ -184,7 +245,14 @@ class CustomLogger:
             'time_iter': round(self._time_used / max(self._iter, 1), round_n),
         }
 
-        if self.task_type == 'regression':
+        if self.task_type == 'kgc_ranking':
+            # Eval path: full-graph ranks accumulated via update_stats_kgc()
+            # Train path: subgraph-level scores accumulated via update_stats()
+            if self._kgc_ranks:
+                task_stats = self.kgc_ranking()
+            else:
+                task_stats = self.kgc_train_approx()
+        elif self.task_type == 'regression':
             task_stats = self.regression()
         elif self.task_type == 'classification_binary':
             task_stats = self.classification_binary()
@@ -218,7 +286,9 @@ class CustomLogger:
 def infer_task_type(cfg):
     """Infer task type string from cfg."""
     tt = cfg.dataset.task_type
-    if tt == 'classification':
+    if tt == 'kgc_ranking':
+        return 'kgc_ranking'
+    elif tt == 'classification':
         return 'classification_multi'
     elif tt == 'classification_binary':
         return 'classification_binary'

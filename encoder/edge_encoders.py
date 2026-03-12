@@ -50,6 +50,33 @@ class VOCEdgeEncoder(nn.Module):
         return batch
 
 
+class RelationEmbeddingEncoder(nn.Module):
+    """
+    Encodes integer relation IDs (batch.edge_attr) to dense vectors of dim_edge.
+
+    Handles two KG edge types that appear in subgraph edge_attr:
+      - Semantic KG edges:           IDs 0 .. num_relations-1
+      - Structural reverse (k-hop):  IDs num_relations .. 2*num_relations-1
+
+    Expander edges are NOT handled here — ExpanderEdgeFixer gives them a
+    separate learnable embedding (exp_edge_attr) and concatenates it later.
+
+    Embedding table size = 2 * num_relations.
+
+    Args:
+        num_relations (int): cfg.dataset.num_relations (base + inverse relations).
+        dim_edge (int): Output embedding dimension (= gt.dim_edge).
+    """
+
+    def __init__(self, num_relations: int, dim_edge: int):
+        super().__init__()
+        self.emb = nn.Embedding(2 * num_relations, dim_edge)
+
+    def forward(self, batch):
+        batch.edge_attr = self.emb(batch.edge_attr.long())  # (E,) → (E, dim_edge)
+        return batch
+
+
 def build_edge_encoder(cfg):
     """
     Return the correct edge encoder given cfg.dataset.edge_encoder_name.
@@ -57,7 +84,13 @@ def build_edge_encoder(cfg):
     name = cfg.dataset.edge_encoder_name
     dim_h = cfg.gt.dim_edge  # set equal to dim_hidden in config.py
 
-    if name == 'LinearEdge':
+    if name == 'RelationEmbedding':
+        return RelationEmbeddingEncoder(
+            num_relations=cfg.dataset.num_relations,
+            dim_edge=cfg.gt.dim_edge,
+        )
+
+    elif name == 'LinearEdge':
         return LinearEdgeEncoder(dim_h, dataset_name=cfg.dataset.name)
 
     elif name == 'DummyEdge':
@@ -70,4 +103,4 @@ def build_edge_encoder(cfg):
 
     else:
         raise ValueError(f"Unknown edge encoder: '{name}'. "
-                         f"Supported: LinearEdge, DummyEdge, VOCEdge")
+                         f"Supported: RelationEmbedding, LinearEdge, DummyEdge, VOCEdge")

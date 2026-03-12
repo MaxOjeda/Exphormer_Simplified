@@ -152,12 +152,18 @@ def infer_dims(dataset, cfg):
     """Return (dim_in, dim_out) from the dataset."""
     data0 = dataset[0]
 
+    task_type = cfg.dataset.task_type
+
+    # KGC: KGCNodeEncoder creates features from scratch (ignores dim_in),
+    # and KGCHead does not use dim_out. Return (1, 1) to avoid crashes from
+    # dataset._data access that KGCSplitWrapper does not support.
+    if task_type == 'kgc_ranking':
+        return 1, 1
+
     if data0.x is not None:
         dim_in = data0.x.shape[-1]
     else:
         dim_in = 1  # fallback (Constant or OneHotDegree)
-
-    task_type = cfg.dataset.task_type
 
     if task_type == 'regression':
         # Regression: output dim is the number of target values per sample
@@ -348,7 +354,8 @@ if __name__ == '__main__':
         logging.info(f'Num parameters: {n_params:,}')
 
         # ---- Train ----
-        custom_train(loggers, loaders, model, optimizer, scheduler, cfg)
+        custom_train(loggers, loaders, model, optimizer, scheduler, cfg,
+                     dataset=dataset)
 
     # ---- Aggregate results across seeds ----
     try:

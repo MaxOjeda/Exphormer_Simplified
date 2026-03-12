@@ -9,6 +9,7 @@ import time
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch_geometric.data import Data
 
 from loss.losses import compute_loss
 
@@ -116,9 +117,12 @@ def train_epoch(logger, loader, model, optimizer, scheduler, cfg):
     optimizer.zero_grad()
     device = torch.device(cfg.device)
     batch_accumulation = cfg.optim.batch_accumulation
+    max_iter = cfg.train.max_iter   # 0 = unlimited; >0 stops after N batches
     time_start = time.time()
 
     for iter_idx, batch in enumerate(loader):
+        if max_iter > 0 and iter_idx >= max_iter:
+            break
         batch.split = 'train'
         batch.to(device)
 
@@ -190,10 +194,296 @@ def eval_epoch(logger, loader, model, split, cfg):
 
 
 # ---------------------------------------------------------------------------
+# KGC full-graph evaluation
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def eval_epoch_kgc(logger, loader, model, split, cfg, dataset):
+    """
+    Full-graph KGC evaluation with filtered MRR / Hits@K.
+
+    Batches eval_batch_size queries into a single forward pass by constructing
+    a flat graph covering B × num_entities nodes (B copies of the full KG with
+    different anchor/relation per copy).  KGCNodeEncoder and KGCHead handle
+    variable-B batches via batch.ptr, so no model changes are needed.
+
+    Args:
+        logger:  CustomLogger — accumulates ranks via update_stats_kgc.
+        loader:  unused (we iterate KGCDataset triples directly).
+        model:   MultiModel (nn.Module).
+        split:   'val' or 'test'.
+        cfg:     YACS CfgNode — reads kgc.eval_batch_size.
+        dataset: KGCSplitWrapper — provides filter_dict and full graph tensors.
+    """
+    model.eval()
+    device = torch.device(cfg.device)
+    # Release any cached GPU memory from the training step so the large eval
+    # batch (B full graphs × 347k+ edges) has maximum headroom.
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+
+    kgc_ds      = dataset.train_ds
+    filter_dict  = kgc_ds.all_triples_filter   # {(h, r) -> set(known tails)}
+    head_filter  = kgc_ds.head_filter          # {(t, r_orig) -> set(known heads)}
+    base_num_rel = kgc_ds.num_base_relations   # for detecting reciprocal queries
+    N            = kgc_ds.num_entities
+
+    full_edge_index = kgc_ds.full_edge_index.to(device)  # (2, E)
+    full_edge_attr  = kgc_ds.full_edge_attr.to(device)   # (E,)
+    E = full_edge_index.shape[1]
+
+    queries   = kgc_ds.val_triples if split == 'val' else kgc_ds.test_triples
+
+    # Standard KGC evaluation uses BOTH tail and head prediction for each triple.
+    # For head prediction of (h, r, t), we query (t, r_inv, ?) and rank h.
+    # With reciprocal training, r_inv = r + num_base_relations.
+    if getattr(cfg.kgc, 'reciprocal', False) and hasattr(kgc_ds, 'num_base_relations'):
+        base_num_rel = kgc_ds.num_base_relations
+        rec_queries = torch.stack([
+            queries[:, 2],                       # t becomes anchor
+            queries[:, 1] + base_num_rel,        # r_inv = r + num_base_rel
+            queries[:, 0],                       # h becomes true answer
+        ], dim=1)
+        queries = torch.cat([queries, rec_queries], dim=0)
+
+    n_queries = len(queries)
+    eval_bs   = cfg.kgc.eval_batch_size
+
+    logging.info(
+        f'eval_epoch_kgc [{split}]: {n_queries} queries '
+        f'on full graph ({N} nodes, eval_batch_size={eval_bs})'
+    )
+
+    # Precompute per-edge node offsets for the maximum batch size.
+    # offset_table[j] = (j // E) * N  for j in [0, eval_bs * E).
+    # For a chunk of B graphs, slice [:B*E] to get the right offsets.
+    # Shape: (eval_bs * E,)  e.g. [0,...,0, N,...,N, 2N,...,2N, ...]
+    offset_table = (
+        torch.arange(eval_bs, device=device) * N
+    ).repeat_interleave(E)                         # (eval_bs * E,)
+
+    processed  = 0
+    time_start = time.time()
+
+    for chunk_start in range(0, n_queries, eval_bs):
+        chunk  = queries[chunk_start: chunk_start + eval_bs]
+        B      = len(chunk)
+
+        chunk_h = chunk[:, 0].tolist()
+        chunk_r = chunk[:, 1].tolist()
+        chunk_t = chunk[:, 2].tolist()
+
+        # ---------------------------------------------------------------
+        # Build a single flat Data representing B copies of the full KG.
+        # Node index space: graph i owns nodes [i*N, (i+1)*N).
+        # ---------------------------------------------------------------
+        # edge_index: repeat full graph B times, adding per-graph offset
+        rep_ei = full_edge_index.repeat(1, B)                 # (2, B*E)
+        rep_ei = rep_ei + offset_table[:B * E].unsqueeze(0)   # (2, B*E)
+
+        # edge_attr: same relation IDs, just repeated
+        rep_ea = full_edge_attr.repeat(B)                      # (B*E,)
+
+        # Batch bookkeeping
+        batch_assign = torch.arange(B, device=device).repeat_interleave(N)  # (B*N,)
+        ptr          = torch.arange(B + 1, device=device) * N               # (B+1,)
+
+        data = Data(
+            x              = torch.zeros(B * N, 1, device=device),
+            edge_index     = rep_ei,
+            edge_attr      = rep_ea,
+            anchor_idx     = torch.tensor(chunk_h, dtype=torch.long, device=device),
+            query_relation = torch.tensor(chunk_r, dtype=torch.long, device=device),
+            y              = torch.tensor(chunk_t, dtype=torch.long, device=device),
+            num_nodes      = B * N,
+        )
+        data.batch      = batch_assign
+        data.ptr        = ptr
+        data.num_graphs = B
+        # NOTE: no data.expander_edges → ExpanderEdgeFixer uses add_edge_index=True
+        # and copies rep_ei as expander_edge_index (already offset per graph). ✓
+
+        pred, _ = model(data)   # (B, N)
+
+        # ---------------------------------------------------------------
+        # Filtered ranking for each query in the chunk
+        # ---------------------------------------------------------------
+        ranks = []
+        for i in range(B):
+            h, r, t = chunk_h[i], chunk_r[i], chunk_t[i]
+            scores = pred[i].clone()          # (N,)
+            if r >= base_num_rel:
+                # Reciprocal head-prediction query (t_orig, r_inv, h_orig).
+                # Use head_filter[(t_orig, r_orig)] to mask ALL known heads
+                # across train+val+test (not just training heads).
+                r_orig = r - base_num_rel
+                for kt in head_filter.get((h, r_orig), set()):
+                    if kt != t:
+                        scores[kt] = float('-inf')
+            else:
+                for kt in filter_dict.get((h, r), set()):
+                    if kt != t:
+                        scores[kt] = float('-inf')
+            ranks.append(int((scores >= scores[t]).sum().item()))
+
+        logger.update_stats_kgc(
+            ranks=ranks,
+            time_used=time.time() - time_start,
+            lr=0.0,
+            params=getattr(cfg, 'params', 0),
+        )
+        time_start = time.time()
+
+        processed += B
+        if processed % 500 < B or processed >= n_queries:
+            logging.info(f'  eval_kgc [{split}]: {processed}/{n_queries}')
+
+
+# ---------------------------------------------------------------------------
+# Full-graph KGC training (NBFNet-style)
+# ---------------------------------------------------------------------------
+
+def train_epoch_kgc_full(logger, model, optimizer, scheduler, cfg, dataset):
+    """
+    NBFNet-style full-graph training epoch for KGC.
+
+    Each call randomly samples `kgc.train_steps_per_epoch * kgc.train_batch_size`
+    training triples and runs each mini-batch as B full-graph copies through the
+    model, optimising with filtered binary cross-entropy.  This eliminates the
+    train/eval structural mismatch caused by subgraph extraction.
+
+    Args:
+        logger:    CustomLogger — accumulates per-step stats via update_stats.
+        model:     MultiModel (nn.Module).
+        optimizer: PyTorch optimizer.
+        scheduler: PyTorch LR scheduler (stepped once per epoch in custom_train).
+        cfg:       YACS CfgNode — reads kgc.train_steps_per_epoch,
+                   kgc.train_batch_size, optim.batch_accumulation,
+                   optim.clip_grad_norm, train.max_iter.
+        dataset:   KGCSplitWrapper — exposes full graph tensors and filter_dict.
+    """
+    from loss.losses import kgc_full_graph_ce
+
+    model.train()
+    optimizer.zero_grad()
+    device = torch.device(cfg.device)
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+
+    kgc_ds      = dataset.train_ds
+    filter_dict = kgc_ds.all_triples_filter        # {(h, r) -> set(tails)}
+    N           = kgc_ds.num_entities
+    bnr         = kgc_ds.num_base_relations        # 11 for WN18RR
+    nr          = kgc_ds.num_relations             # 22 = 2 * bnr
+
+    full_edge_index = kgc_ds.full_edge_index.to(device)   # (2, E)
+    full_edge_attr  = kgc_ds.full_edge_attr.to(device)    # (E,)
+
+    train_triples = kgc_ds.train_triples           # (N_train, 3) on CPU
+    n_train       = len(train_triples)
+
+    train_bs    = cfg.kgc.train_batch_size         # queries per forward pass
+    steps       = cfg.kgc.train_steps_per_epoch    # total steps this epoch
+    batch_accum = cfg.optim.batch_accumulation
+    max_iter    = cfg.train.max_iter               # 0 = no limit
+
+    # Random draw of (steps * train_bs) triples, cycling over the training set.
+    needed  = steps * train_bs
+    reps    = (needed + n_train - 1) // n_train
+    indices = torch.randperm(n_train).repeat(reps)[:needed]  # (needed,)
+
+    time_start = time.time()
+
+    for step_idx in range(steps):
+        if max_iter > 0 and step_idx >= max_iter:
+            break
+
+        batch_idx = indices[step_idx * train_bs: (step_idx + 1) * train_bs]
+        chunk     = train_triples[batch_idx]       # (B, 3)
+        B         = len(chunk)
+
+        chunk_h = chunk[:, 0].tolist()
+        chunk_r = chunk[:, 1].tolist()
+        chunk_t = chunk[:, 2]                      # (B,) long, on CPU
+
+        # NBFNet-style query-edge removal (Zhu et al. 2021, Appendix B):
+        # Remove the direct answer edges (h→t, r) and related edges from the
+        # training graph so the model cannot cheat with a trivial 1-hop lookup.
+        # Without this, NLL→0 in epoch 1 and MRR plateaus at ~0.35 (1-hop ceiling).
+        # Currently requires train_batch_size=1 (B=1) since each query needs
+        # a different edge mask; generalising to B>1 needs per-graph offsets.
+        assert train_bs == 1, (
+            "Query-edge removal requires train_batch_size=1; "
+            f"got train_batch_size={train_bs}"
+        )
+        h_int = chunk_h[0]
+        t_int = int(chunk_t[0].item())
+        # Normalise to the base relation, then collect the 4 related IDs:
+        # original (r_orig), reciprocal (r_orig+bnr), and their structural
+        # reverses (+nr), which together describe the same fact in all forms.
+        r_orig = chunk_r[0] % bnr
+        rm_rels = torch.tensor(
+            [r_orig, r_orig + bnr, r_orig + nr, r_orig + bnr + nr],
+            device=device, dtype=torch.long,
+        )
+        ht = (
+            ((full_edge_index[0] == h_int) & (full_edge_index[1] == t_int))
+            | ((full_edge_index[0] == t_int) & (full_edge_index[1] == h_int))
+        )
+        keep   = ~(ht & torch.isin(full_edge_attr, rm_rels))
+        rep_ei = full_edge_index[:, keep]   # (2, E-k) where k<=4 removed
+        rep_ea = full_edge_attr[keep]        # (E-k,)
+
+        batch_assign = torch.arange(B, device=device).repeat_interleave(N)
+        ptr          = torch.arange(B + 1, device=device) * N
+
+        data = Data(
+            x              = torch.zeros(B * N, 1, device=device),
+            edge_index     = rep_ei,
+            edge_attr      = rep_ea,
+            anchor_idx     = chunk[:, 0].to(device),
+            query_relation = chunk[:, 1].to(device),
+            y              = chunk_t.to(device),
+            num_nodes      = B * N,
+        )
+        data.batch      = batch_assign
+        data.ptr        = ptr
+        data.num_graphs = B
+
+        pred, _ = model(data)   # (B, N)
+
+        loss, pred_score = kgc_full_graph_ce(
+            pred, chunk_t.to(device), filter_dict, chunk_h, chunk_r,
+            label_smoothing=getattr(cfg.kgc, 'label_smoothing', 0.0),
+            head_filter=kgc_ds.head_filter,
+            base_num_rel=kgc_ds.num_base_relations,
+        )
+
+        loss.backward()
+
+        if ((step_idx + 1) % batch_accum == 0) or (step_idx + 1 == steps):
+            if cfg.optim.clip_grad_norm:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            optimizer.zero_grad()
+
+        logger.update_stats(
+            true=chunk_t.detach().cpu(),
+            pred=pred_score.detach().cpu(),
+            loss=loss.detach().cpu().item(),
+            lr=scheduler.get_last_lr()[0],
+            time_used=time.time() - time_start,
+            params=getattr(cfg, 'params', 0),
+            dataset_name=cfg.dataset.name,
+        )
+        time_start = time.time()
+
+
+# ---------------------------------------------------------------------------
 # Main training loop
 # ---------------------------------------------------------------------------
 
-def custom_train(loggers, loaders, model, optimizer, scheduler, cfg):
+def custom_train(loggers, loaders, model, optimizer, scheduler, cfg, dataset=None):
     """
     Full training loop.
 
@@ -213,6 +503,10 @@ def custom_train(loggers, loaders, model, optimizer, scheduler, cfg):
         return
 
     logging.info('Starting from epoch %d', start_epoch)
+
+    is_kgc = (cfg.dataset.task_type == 'kgc_ranking')
+    use_full_graph_eval  = is_kgc and getattr(cfg.kgc, 'eval_full_graph',  False)
+    use_full_graph_train = is_kgc and getattr(cfg.kgc, 'train_full_graph', False)
 
     # WandB setup
     wandb_run = None
@@ -242,14 +536,23 @@ def custom_train(loggers, loaders, model, optimizer, scheduler, cfg):
         t0 = time.perf_counter()
 
         # --- Train ---
-        train_epoch(loggers[0], loaders[0], model, optimizer, scheduler, cfg)
+        if use_full_graph_train:
+            train_epoch_kgc_full(loggers[0], model, optimizer, scheduler,
+                                 cfg, dataset)
+        else:
+            train_epoch(loggers[0], loaders[0], model, optimizer, scheduler, cfg)
         perf[0].append(loggers[0].write_epoch(cur_epoch))
 
         # --- Val / Test (on eval epochs) ---
         if _is_eval_epoch(cur_epoch, eval_period, max_epoch):
             for i in range(1, num_splits):
-                eval_epoch(loggers[i], loaders[i], model,
-                           split=split_names[i - 1], cfg=cfg)
+                split_name = split_names[i - 1]
+                if use_full_graph_eval:
+                    eval_epoch_kgc(loggers[i], loaders[i], model,
+                                   split_name, cfg, dataset)
+                else:
+                    eval_epoch(loggers[i], loaders[i], model,
+                               split=split_name, cfg=cfg)
                 perf[i].append(loggers[i].write_epoch(cur_epoch))
         else:
             for i in range(1, num_splits):
@@ -306,9 +609,12 @@ def custom_train(loggers, loaders, model, optimizer, scheduler, cfg):
                     wandb_run.summary['full_epoch_time_sum'] = \
                         np.sum(full_epoch_times)
 
-            # Best-epoch checkpoint
+            # Best-epoch checkpoint.
+            # best_epoch is an index into perf[], not the actual epoch number,
+            # so comparing with cur_epoch breaks on auto_resume.  Instead check
+            # whether the most recent eval produced the best result so far.
             if cfg.train.enable_ckpt and cfg.train.ckpt_best and \
-                    best_epoch == cur_epoch:
+                    best_epoch == len(val_perf) - 1:
                 _save_ckpt(model, optimizer, scheduler, cur_epoch, cfg.run_dir)
 
             best_train_loss = perf[0][best_epoch].get('loss', float('nan'))

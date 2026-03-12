@@ -15,7 +15,8 @@ class GatedGCNLayer(pyg_nn.conv.MessagePassing):
     Residual Gated Graph ConvNets: https://arxiv.org/pdf/1711.07553.pdf
     """
 
-    def __init__(self, in_dim, out_dim, dropout, residual, equivstable_pe=False, **kwargs):
+    def __init__(self, in_dim, out_dim, dropout, residual, equivstable_pe=False,
+                 norm_type='batch', **kwargs):
         super().__init__(**kwargs)
         self.A = pyg_nn.Linear(in_dim, out_dim, bias=True)
         self.B = pyg_nn.Linear(in_dim, out_dim, bias=True)
@@ -30,8 +31,15 @@ class GatedGCNLayer(pyg_nn.conv.MessagePassing):
                 nn.Linear(out_dim, 1),
                 nn.Sigmoid())
 
-        self.bn_node_x = nn.BatchNorm1d(out_dim)
-        self.bn_edge_e = nn.BatchNorm1d(out_dim)
+        if norm_type == 'layer':
+            self.bn_node_x = nn.LayerNorm(out_dim)
+            self.bn_edge_e = nn.LayerNorm(out_dim)
+        elif norm_type == 'batch':
+            self.bn_node_x = nn.BatchNorm1d(out_dim)
+            self.bn_edge_e = nn.BatchNorm1d(out_dim)
+        else:  # 'none'
+            self.bn_node_x = nn.Identity()
+            self.bn_edge_e = nn.Identity()
         self.dropout = dropout
         self.residual = residual
         self.e = None

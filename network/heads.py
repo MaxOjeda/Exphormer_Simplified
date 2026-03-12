@@ -72,12 +72,55 @@ class InductiveNodeHead(nn.Module):
         return pred, label
 
 
+class KGCHead(nn.Module):
+    """
+    Scoring head for KGC with query-conditioned (NBFNet-style) initialization.
+
+    After L Exphormer layers, x_v^(L) encodes the relevance of entity v to
+    the query (h, r, ?). A linear layer maps each node to a scalar score.
+
+    Returns (padded_scores, y) where:
+      padded_scores  (B, max_N)  score matrix padded with -inf for unused slots.
+                                 Shape is compatible with F.cross_entropy(pred, y).
+      y              (B,)        local index of the true answer in each subgraph.
+
+    During full-graph eval (B=1), padded_scores has shape (1, |E|) covering all
+    entities — no padding, every slot is valid.
+    """
+
+    def __init__(self, dim_in: int, dropout: float = 0.0):
+        super().__init__()
+        self.scorer = nn.Linear(dim_in, 1)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, batch):
+        h = self.drop(batch.x)                      # (N_total, dim_in)
+        scores = self.scorer(h).squeeze(-1)          # (N_total,)
+
+        ptr = batch.ptr                              # (B+1,)
+        B = int(ptr.shape[0]) - 1
+        sizes = (ptr[1:] - ptr[:-1]).tolist()
+        max_N = max(sizes)
+
+        # Pack variable-length per-graph scores into a (B, max_N) matrix.
+        # Positions beyond each graph's actual size stay at -inf so that
+        # softmax assigns them zero probability.
+        padded = scores.new_full((B, max_N), float('-inf'))
+        for i, (start, n) in enumerate(zip(ptr[:-1].tolist(), sizes)):
+            padded[i, :n] = scores[start: start + n]
+
+        return padded, batch.y.view(-1).long()
+
+
 def build_head(cfg, dim_in, dim_out):
     """Factory: return the appropriate head."""
     head_name = cfg.gnn.head
-    if head_name == 'default':
+    if head_name == 'kgc':
+        return KGCHead(dim_in=dim_in, dropout=cfg.gnn.dropout)
+    elif head_name == 'default':
         return GraphHead(dim_in, dim_out, cfg)
     elif head_name == 'inductive_node':
         return InductiveNodeHead(dim_in, dim_out, cfg)
     else:
-        raise ValueError(f"Unknown head: '{head_name}'. Supported: default, inductive_node")
+        raise ValueError(f"Unknown head: '{head_name}'. "
+                         f"Supported: kgc, default, inductive_node")

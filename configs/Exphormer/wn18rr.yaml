@@ -19,12 +19,12 @@ kgc:
   eval_batch_size: 4         # B=16 OOMs: Ex_j=(5.57M,256)=5.7GB; B=4→1.4GB OK
   train_full_graph: True
   train_batch_size: 1
-  train_steps_per_epoch: 52101   # 30% of dataset (173670 triples)
-  label_smoothing: 0.0           # full coverage → no gradient collapse → no smoothing needed
+  train_steps_per_epoch: 52101   # 30% of 173670 training triples
+  label_smoothing: 0.0
 
 gt:
   layer_type: Exphormer
-  layers: 3
+  layers: 6
   n_heads: 4
   dim_hidden: 32
   dim_edge: 32
@@ -39,7 +39,7 @@ gnn:
   head: kgc
   layers_pre_mp: 0
   layers_post_mp: 0
-  dim_inner: 32
+  dim_inner: 32                    # must equal gt.dim_hidden
   dropout: 0.1
 
 prep:
@@ -60,7 +60,7 @@ optim:
   optimizer: adamW
   base_lr: 0.0002              # full-epoch gradients are more stable → can use higher LR
   weight_decay: 1.0e-4
-  max_epoch: 50                # 50 full epochs (vs 200 mini-epochs)
+  max_epoch: 100               # 100 epochs at 30% coverage ≈ 30 full-epoch equivalents
   scheduler: cosine_with_warmup
   num_warmup_epochs: 5
   clip_grad_norm: True         # prevent large gradient updates at high LR

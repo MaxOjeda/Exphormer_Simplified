@@ -54,23 +54,21 @@ class RelationEmbeddingEncoder(nn.Module):
     """
     Encodes integer relation IDs (batch.edge_attr) to dense vectors of dim_edge.
 
-    Handles two KG edge types that appear in subgraph edge_attr:
-      - Semantic KG edges:           IDs 0 .. num_relations-1
-      - Structural reverse (k-hop):  IDs num_relations .. 2*num_relations-1
+    Embedding table size = num_edge_types, which is set at load time:
+      - reciprocal=True:  num_edge_types = num_relations (e.g. 22 for WN18RR)
+      - reciprocal=False: num_edge_types = 2*num_relations (structural reverses added)
 
     Expander edges are NOT handled here — ExpanderEdgeFixer gives them a
     separate learnable embedding (exp_edge_attr) and concatenates it later.
 
-    Embedding table size = 2 * num_relations.
-
     Args:
-        num_relations (int): cfg.dataset.num_relations (base + inverse relations).
+        num_edge_types (int): cfg.dataset.num_edge_types — exact embedding table size.
         dim_edge (int): Output embedding dimension (= gt.dim_edge).
     """
 
-    def __init__(self, num_relations: int, dim_edge: int):
+    def __init__(self, num_edge_types: int, dim_edge: int):
         super().__init__()
-        self.emb = nn.Embedding(2 * num_relations, dim_edge)
+        self.emb = nn.Embedding(num_edge_types, dim_edge)
 
     def forward(self, batch):
         batch.edge_attr = self.emb(batch.edge_attr.long())  # (E,) → (E, dim_edge)
@@ -86,7 +84,7 @@ def build_edge_encoder(cfg):
 
     if name == 'RelationEmbedding':
         return RelationEmbeddingEncoder(
-            num_relations=cfg.dataset.num_relations,
+            num_edge_types=cfg.dataset.num_edge_types,
             dim_edge=cfg.gt.dim_edge,
         )
 

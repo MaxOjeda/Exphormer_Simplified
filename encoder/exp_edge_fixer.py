@@ -12,9 +12,13 @@ class ExpanderEdgeFixer(nn.Module):
     used by ExphormerAttention.
 
     Three optional edge sources:
-      1. Real graph edges (batch.edge_index + batch.edge_attr)
-      2. Expander graph edges (batch.expander_edges, stored per-graph)
-      3. Virtual node edges (learnable embeddings per graph)
+      1. Real graph edges  (batch.edge_index + batch.edge_attr, if add_edge_index=True)
+      2. Expander edges — two mutually exclusive modes:
+           a) batch.expander_edge_index  (2, B*E_exp) — pre-computed with global offsets,
+              set by the trainer for full-graph mode.  cfg.prep.exp controls generation.
+           b) batch.expander_edges       (E_exp, 2) per-graph — produced by __getitem__
+              in subgraph DataLoader mode and assembled here via to_data_list().
+      3. Virtual node edges (learnable embeddings per graph, if num_virt_node > 0)
     """
 
     def __init__(self, add_edge_index=False, num_virt_node=0,
@@ -47,8 +51,21 @@ class ExpanderEdgeFixer(nn.Module):
         num_node = batch.batch.shape[0]
         num_graphs = batch.num_graphs
 
-        # 2. Expander edges (stored as per-graph edge lists)
-        if hasattr(batch, 'expander_edges'):
+        # 2. Expander edges — two sources, mutually exclusive:
+        #    a) pre-computed global edge_index (full-graph mode, set by trainer)
+        #    b) per-graph edge lists from DataLoader batching (subgraph mode)
+        if hasattr(batch, 'expander_edge_index'):
+            # Full-graph mode: expander_edge_index is already globally offset
+            # (2, B*E_exp). Consumed here; overwritten with combined result below.
+            exp_ei = batch.expander_edge_index
+            edge_index_sets.append(exp_ei)
+            edge_attr_sets.append(
+                self.exp_edge_attr(
+                    torch.zeros(exp_ei.shape[1], dtype=torch.long, device=device)
+                )
+            )
+        elif hasattr(batch, 'expander_edges'):
+            # Subgraph mode: per-graph edge lists assembled by DataLoader.
             data_list = batch.to_data_list()
             exp_edges = []
             cumulative = 0
@@ -113,6 +130,7 @@ class ExpanderEdgeFixer(nn.Module):
 
         if hasattr(batch, 'expander_edges'):
             del batch.expander_edges
+        # expander_edge_index (pre-computed) is overwritten by the combined result below.
 
         batch.expander_edge_index = edge_index
         batch.expander_edge_attr = edge_attr

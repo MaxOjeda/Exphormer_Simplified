@@ -286,30 +286,71 @@ class KGCDataset(Dataset):
         all_triples = torch.cat([train_triples, val_triples, test_triples], dim=0)
         tail_filter, head_filter = _build_filter_dict(all_triples)
 
-        # Full graph for subgraph extraction: training edges + bidirectional
-        # structural reverses (r + num_relations).  Val/test edges are excluded
-        # to prevent leakage into subgraph neighbourhoods.
+        # Full graph for message passing.  Val/test edges are excluded to
+        # prevent leakage into subgraph neighbourhoods.
+        #
+        # When reciprocal=True the training set already contains both (h,r,t)
+        # and (t,r+|R_base|,h), so the graph is already bidirectional and no
+        # extra structural reverse edges are needed (adding them would double
+        # the edge count and ~2x the per-step scatter cost with no benefit).
+        #
+        # When reciprocal=False we add structural reverses (r + num_relations)
+        # so that k-hop traversal and message passing can flow both ways.
         train_src = train_triples[:, 0]
         train_dst = train_triples[:, 2]
         train_rel = train_triples[:, 1]
 
-        rev_rel = train_rel + num_relations  # structural reverse relation IDs
-        full_src = torch.cat([train_src, train_dst], dim=0)
-        full_dst = torch.cat([train_dst, train_src], dim=0)
-        full_rel = torch.cat([train_rel, rev_rel],   dim=0)
-        full_edge_index = torch.stack([full_src, full_dst], dim=0).long()
-        full_edge_attr  = full_rel.long()
+        if self._reciprocal:
+            # 173,670 edges (WN18RR) — already bidirectional via reciprocals.
+            full_edge_index = torch.stack([train_src, train_dst], dim=0).long()
+            full_edge_attr  = train_rel.long()
+            num_edge_types  = num_relations          # 22 for WN18RR
+        else:
+            rev_rel = train_rel + num_relations
+            full_edge_index = torch.stack([
+                torch.cat([train_src, train_dst], dim=0),
+                torch.cat([train_dst, train_src], dim=0),
+            ], dim=0).long()
+            full_edge_attr  = torch.cat([train_rel, rev_rel], dim=0).long()
+            num_edge_types  = 2 * num_relations
 
-        self.num_entities       = int(num_nodes)
-        self.num_relations      = int(num_relations)
-        self.num_base_relations = int(num_base_rel)
-        self.train_triples      = train_triples
-        self.val_triples        = val_triples
-        self.test_triples       = test_triples
-        self.all_triples_filter = tail_filter
-        self.head_filter        = head_filter
-        self.full_edge_index    = full_edge_index
-        self.full_edge_attr     = full_edge_attr
+        # Static expander graph over all num_nodes entities (generated once,
+        # consistent with Exphormer's design: the expander is a fixed structural
+        # property of the graph, not a per-epoch augmentation).
+        # Stored as (2, E_exp) with local node indices [0, num_nodes-1].
+        # In full-graph mode the trainer offsets per B copies; in subgraph mode
+        # each __getitem__ call generates its own small expander independently.
+        # Set cfg.prep.exp=False to disable (no expander in full-graph mode).
+        full_expander_edge_index = None
+        if getattr(self.cfg.prep, 'exp', False) and num_nodes > 1:
+            logging.info(
+                f'Generating static full-KG expander '
+                f'(N={num_nodes}, deg={self.cfg.prep.exp_deg}) ...'
+            )
+            tmp = Data(num_nodes=num_nodes)
+            generate_random_expander(
+                tmp,
+                degree=self.cfg.prep.exp_deg,
+                algorithm=self.cfg.prep.exp_algorithm,
+                max_num_iters=self.cfg.prep.exp_max_num_iters,
+                rng=None,
+                check_spectral=False,  # O(N^2) spectral check is too slow for 40K+ nodes
+            )
+            full_expander_edge_index = tmp.expander_edges.t()  # (2, E_exp)
+            logging.info(f'  Expander edges: {full_expander_edge_index.shape[1]}')
+
+        self.num_entities             = int(num_nodes)
+        self.num_relations            = int(num_relations)
+        self.num_base_relations       = int(num_base_rel)
+        self.num_edge_types           = int(num_edge_types)
+        self.train_triples            = train_triples
+        self.val_triples              = val_triples
+        self.test_triples             = test_triples
+        self.all_triples_filter       = tail_filter
+        self.head_filter              = head_filter
+        self.full_edge_index          = full_edge_index
+        self.full_edge_attr           = full_edge_attr
+        self.full_expander_edge_index = full_expander_edge_index
 
         logging.info(
             f'KGCDataset loaded: {self.num_entities} entities, '
@@ -321,30 +362,34 @@ class KGCDataset(Dataset):
 
     def _init_from_shared(self, shared: dict):
         """Copy pre-loaded state from shared dict (avoids re-loading PyG dataset)."""
-        self.num_entities       = shared['num_entities']
-        self.num_relations      = shared['num_relations']
-        self.num_base_relations = shared['num_base_relations']
-        self.train_triples      = shared['train_triples']
-        self.val_triples        = shared['val_triples']
-        self.test_triples       = shared['test_triples']
-        self.all_triples_filter = shared['all_triples_filter']
-        self.head_filter        = shared['head_filter']
-        self.full_edge_index    = shared['full_edge_index']
-        self.full_edge_attr     = shared['full_edge_attr']
+        self.num_entities             = shared['num_entities']
+        self.num_relations            = shared['num_relations']
+        self.num_base_relations       = shared['num_base_relations']
+        self.num_edge_types           = shared['num_edge_types']
+        self.train_triples            = shared['train_triples']
+        self.val_triples              = shared['val_triples']
+        self.test_triples             = shared['test_triples']
+        self.all_triples_filter       = shared['all_triples_filter']
+        self.head_filter              = shared['head_filter']
+        self.full_edge_index          = shared['full_edge_index']
+        self.full_edge_attr           = shared['full_edge_attr']
+        self.full_expander_edge_index = shared['full_expander_edge_index']
 
     def get_shared_state(self) -> dict:
         """Return a dict of shared state for constructing sibling split datasets."""
         return {
-            'num_entities':       self.num_entities,
-            'num_relations':      self.num_relations,
-            'num_base_relations': self.num_base_relations,
-            'train_triples':      self.train_triples,
-            'val_triples':        self.val_triples,
-            'test_triples':       self.test_triples,
-            'all_triples_filter': self.all_triples_filter,
-            'head_filter':        self.head_filter,
-            'full_edge_index':    self.full_edge_index,
-            'full_edge_attr':     self.full_edge_attr,
+            'num_entities':             self.num_entities,
+            'num_relations':            self.num_relations,
+            'num_base_relations':       self.num_base_relations,
+            'num_edge_types':           self.num_edge_types,
+            'train_triples':            self.train_triples,
+            'val_triples':              self.val_triples,
+            'test_triples':             self.test_triples,
+            'all_triples_filter':       self.all_triples_filter,
+            'head_filter':              self.head_filter,
+            'full_edge_index':          self.full_edge_index,
+            'full_edge_attr':           self.full_edge_attr,
+            'full_expander_edge_index': self.full_expander_edge_index,
         }
 
     # ------------------------------------------------------------------

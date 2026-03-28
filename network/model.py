@@ -276,6 +276,12 @@ class MultiLayer(nn.Module):
         if self.batch_norm:
             h = self.norm2(h)
 
+        # Bellman-Ford residual: re-inject initial representation at each layer.
+        # Equivalent to +h(0)_v in the generalised Bellman-Ford update —
+        # ensures the source node retains the query signal across all layers.
+        if hasattr(batch, 'x0'):
+            h = h + batch.x0
+
         batch.x = h
         return batch
 
@@ -342,6 +348,9 @@ class MultiModel(nn.Module):
         batch = self.encoder(batch)
         if hasattr(self, 'pre_mp'):
             batch.x = self.pre_mp(batch.x)
+
+        # Save initial representation h(0) for Bellman-Ford residual in each layer.
+        batch.x0 = batch.x
 
         if self.training and self.grad_checkpoint:
             from torch.utils.checkpoint import checkpoint

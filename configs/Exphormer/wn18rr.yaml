@@ -18,13 +18,13 @@ kgc:
   eval_full_graph: True
   eval_batch_size: 4         # B=16 OOMs: Ex_j=(5.57M,256)=5.7GB; B=4→1.4GB OK
   train_full_graph: True
-  train_batch_size: 1
-  train_steps_per_epoch: 52101   # 30% of 173670 training triples
+  train_batch_size: 16
+  train_steps_per_epoch: 3257    # ceil(52101 / 16) = 30% coverage, same data as B=1 30%
   label_smoothing: 0.0
 
 gt:
   layer_type: Exphormer
-  layers: 6
+  layers: 3
   n_heads: 4
   dim_hidden: 32
   dim_edge: 32

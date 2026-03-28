@@ -40,12 +40,17 @@ class ExphormerAttention(nn.Module):
         if use_query_conditioning:
             assert num_relations is not None, \
                 "num_relations must be provided when use_query_conditioning=True"
-            # Bias on the attention score: makes score(i→j) depend on (K_i, Q_j, r_edge, r_query).
+            # Option A: additive query bias Q_v = W_Q h_v + Q_cond[q].
+            # Initialized near zero so at init Q_v ≈ W_Q h_v.
+            self.Q_cond = nn.Embedding(num_relations, self.out_dim * num_heads)
+            nn.init.normal_(self.Q_cond.weight, mean=0.0, std=0.01)
+            # Multiplicative gate on the edge key: implements f(w_r, q) = w_r ⊙ q.
+            # E = W_E(w_r) * (1 + E_query(q)) so that at init (E_query≈0) E≈W_E(w_r).
             self.E_query = nn.Embedding(num_relations, self.out_dim * num_heads)
+            nn.init.normal_(self.E_query.weight, mean=0.0, std=0.01)
             if use_edge_gating:
                 # Bias on the value gate: makes the message content V_i*gate depend on
-                # BOTH r_edge AND r_query — the Exphormer analog of NBFNet's
-                # message(x→v) = W_{r_query} W_{r_edge} x_u.
+                # BOTH r_edge AND r_query.
                 self.V_gate_query = nn.Embedding(num_relations, self.out_dim * num_heads)
 
     def propagate_attention(self, batch, edge_index):
@@ -59,8 +64,8 @@ class ExphormerAttention(nn.Module):
 
         # Value for each edge: optionally gated by the relation embedding.
         # Without gating: V_u is shared across all relations incident to u.
-        # With gating: V_u is modulated per relation, so the message u→v along
-        #   relation r carries different information than u→v' along relation r'.
+        # With gating: V_u is modulated per relation, so the message u->v along
+        #   relation r carries different information than u->v' along relation r'.
         v_src = batch.V_h[edge_index[0].to(torch.long)]  # (E, heads, out_dim)
         if self.use_edge_gating:
             gate = torch.sigmoid(batch.E_gate)            # (E, heads, out_dim)
@@ -88,17 +93,28 @@ class ExphormerAttention(nn.Module):
         E = self.E(edge_attr)           # (num_edges, heads * out_dim)
         V_h = self.V(h)
 
-        # Compute per-edge query relation index once — reused for E_query and V_gate_query.
+        # Compute per-node and per-edge query relation indices.
         query_per_edge = None
         if self.use_query_conditioning and hasattr(batch, 'query_relation'):
+            # Option A: Q_v = W_Q h_v + Q_cond[q]
+            # query_per_node: real nodes only (batch.batch has length num_node).
+            query_per_node = batch.query_relation[batch.batch]   # (num_node,) rel idx
+            Q_cond_bias = self.Q_cond(query_per_node)            # (num_node, heads*out_dim)
+            if self.use_virt_nodes and h.shape[0] > num_node:
+                # Virtual nodes appended after real nodes — pad with zeros.
+                pad = Q_h.new_zeros(h.shape[0] - num_node, Q_cond_bias.shape[1])
+                Q_cond_bias = torch.cat([Q_cond_bias, pad], dim=0)
+            Q_h = Q_h + Q_cond_bias
+
             # Clamp source node index to real nodes (safe when virtual nodes present).
             src = edge_index[0].clamp(max=num_node - 1).long()
             edge_graph = batch.batch[src]                        # (num_edges,) graph idx
             query_per_edge = batch.query_relation[edge_graph]    # (num_edges,) rel idx
 
-            # (1) Condition attention SCORE on query:
-            #     score(i→j) depends on (K_i, Q_j, r_edge, r_query)
-            E = E + self.E_query(query_per_edge)
+            # E_query: Hadamard-style multiplicative interaction on edge features.
+            #   E = W_E(w_r) * (1 + E_query(q))
+            #   Identity residual keeps training stable at init (E_query≈0 → E≈W_E(w_r)).
+            E = E * (1.0 + self.E_query(query_per_edge))
 
         batch.Q_h = Q_h.view(-1, self.num_heads, self.out_dim)
         batch.K_h = K_h.view(-1, self.num_heads, self.out_dim)
@@ -108,10 +124,8 @@ class ExphormerAttention(nn.Module):
         if self.use_edge_gating:
             E_gate = self.V_gate(edge_attr)                      # (num_edges, heads*out_dim)
             if query_per_edge is not None and hasattr(self, 'V_gate_query'):
-                # (2) Condition message VALUE on query:
-                #     gate(i→j) = σ(V_gate_edge(r_edge) + V_gate_query(r_query))
-                #     → message content V_i*gate depends on BOTH r_edge AND r_query
-                #     Exphormer analog of NBFNet's w_q(x,r,v) = W_{r_query} W_{r_edge} x_u
+                # Condition message VALUE on query:
+                # gate(i->j) = σ(V_gate_edge(r_edge) + V_gate_query(r_query))
                 E_gate = E_gate + self.V_gate_query(query_per_edge)
             batch.E_gate = E_gate.view(-1, self.num_heads, self.out_dim)
 

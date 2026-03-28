@@ -130,11 +130,13 @@ def load_dataset(cfg):
         cfg.defrost()
         cfg.dataset.num_entities  = train_ds.num_entities
         cfg.dataset.num_relations = train_ds.num_relations
+        cfg.dataset.num_edge_types = train_ds.num_edge_types
         cfg.freeze()
         logging.info(
             f"[*] Loaded KGC dataset '{name}': "
             f"{train_ds.num_entities} entities, "
-            f"{train_ds.num_relations} relations "
+            f"{train_ds.num_relations} relations, "
+            f"{train_ds.num_edge_types} edge types "
             f"(reciprocal={cfg.kgc.reciprocal}), "
             f"{len(train_ds)} train / {len(val_ds)} val / {len(test_ds)} test queries"
         )

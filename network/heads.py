@@ -74,10 +74,11 @@ class InductiveNodeHead(nn.Module):
 
 class KGCHead(nn.Module):
     """
-    Scoring head for KGC with query-conditioned (NBFNet-style) initialization.
+    Scoring head for KGC with query-conditioned (NBFNet-style) bilinear scoring.
 
     After L Exphormer layers, x_v^(L) encodes the relevance of entity v to
-    the query (h, r, ?). A linear layer maps each node to a scalar score.
+    the query (h, r, ?). We concatenate the query relation embedding to each
+    node representation, then a linear layer maps to a scalar score.
 
     Returns (padded_scores, y) where:
       padded_scores  (B, max_N)  score matrix padded with -inf for unused slots.
@@ -85,16 +86,20 @@ class KGCHead(nn.Module):
       y              (B,)        local index of the true answer in each subgraph.
 
     During full-graph eval (B=1), padded_scores has shape (1, |E|) covering all
-    entities — no padding, every slot is valid.
+    entities -- no padding, every slot is valid.
     """
 
-    def __init__(self, dim_in: int, dropout: float = 0.0):
+    def __init__(self, dim_in: int, num_relations: int, dropout: float = 0.0):
         super().__init__()
-        self.scorer = nn.Linear(dim_in, 1)
+        self.rel_emb = nn.Embedding(num_relations, dim_in)
+        self.scorer = nn.Linear(dim_in * 2, 1)
         self.drop = nn.Dropout(dropout)
 
     def forward(self, batch):
-        h = self.drop(batch.x)                      # (N_total, dim_in)
+        h = self.drop(batch.x)                       # (N_total, dim_in)
+        r_emb = self.rel_emb(batch.query_relation)   # (B, dim_in)
+        r_per_node = r_emb[batch.batch]              # (N_total, dim_in)
+        h = torch.cat([h, r_per_node], dim=-1)       # (N_total, 2*dim_in)
         scores = self.scorer(h).squeeze(-1)          # (N_total,)
 
         ptr = batch.ptr                              # (B+1,)
@@ -116,7 +121,7 @@ def build_head(cfg, dim_in, dim_out):
     """Factory: return the appropriate head."""
     head_name = cfg.gnn.head
     if head_name == 'kgc':
-        return KGCHead(dim_in=dim_in, dropout=cfg.gnn.dropout)
+        return KGCHead(dim_in=dim_in, num_relations=cfg.dataset.num_relations, dropout=cfg.gnn.dropout)
     elif head_name == 'default':
         return GraphHead(dim_in, dim_out, cfg)
     elif head_name == 'inductive_node':

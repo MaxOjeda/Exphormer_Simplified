@@ -34,7 +34,9 @@ CLAUDE.md
 __pycache__/
 *.py[cod]
 *$py.class
-
+results_*/
+*.tex
+*.sh
 # C extensions
 *.so
 

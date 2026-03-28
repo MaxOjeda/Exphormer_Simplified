@@ -41,6 +41,7 @@ cfg.dataset.node_encoder_num_types = 0
 cfg.dataset.edge_encoder_num_types = 0
 cfg.dataset.num_entities  = 0   # set at load time for KGC datasets
 cfg.dataset.num_relations = 0   # set at load time (includes inverse relations)
+cfg.dataset.num_edge_types = 0  # set at load time (= num_relations if reciprocal, else 2*num_relations)
 
 # ---------------------------------------------------------------------------
 # Model

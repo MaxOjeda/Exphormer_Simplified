@@ -194,6 +194,25 @@ def eval_epoch(logger, loader, model, split, cfg):
 
 
 # ---------------------------------------------------------------------------
+# Full-graph expander helper
+# ---------------------------------------------------------------------------
+
+def _tile_expander(exp_ei_single, B, N, device):
+    """
+    Replicate a single-graph expander edge_index (2, E_exp) for B graph copies.
+
+    Each copy i gets node offsets [i*N], producing (2, B*E_exp).
+    Returns None if exp_ei_single is None.
+    """
+    if exp_ei_single is None:
+        return None
+    exp_ei = exp_ei_single.to(device)          # (2, E_exp)
+    E_exp  = exp_ei.shape[1]
+    offsets = (torch.arange(B, device=device) * N).repeat_interleave(E_exp)
+    return exp_ei.repeat(1, B) + offsets.unsqueeze(0)  # (2, B*E_exp)
+
+
+# ---------------------------------------------------------------------------
 # KGC full-graph evaluation
 # ---------------------------------------------------------------------------
 
@@ -262,6 +281,13 @@ def eval_epoch_kgc(logger, loader, model, split, cfg, dataset):
         torch.arange(eval_bs, device=device) * N
     ).repeat_interleave(E)                         # (eval_bs * E,)
 
+    # Tile the static expander (generated once at dataset build time) for
+    # eval_bs graph copies.  Sliced per chunk for the last batch (B < eval_bs).
+    # cfg.prep.exp=False → full_expander_edge_index is None → no expander edges.
+    eval_exp_ei = _tile_expander(kgc_ds.full_expander_edge_index, eval_bs, N, device)
+    E_exp = kgc_ds.full_expander_edge_index.shape[1] \
+        if kgc_ds.full_expander_edge_index is not None else 0
+
     processed  = 0
     time_start = time.time()
 
@@ -300,8 +326,12 @@ def eval_epoch_kgc(logger, loader, model, split, cfg, dataset):
         data.batch      = batch_assign
         data.ptr        = ptr
         data.num_graphs = B
-        # NOTE: no data.expander_edges → ExpanderEdgeFixer uses add_edge_index=True
-        # and copies rep_ei as expander_edge_index (already offset per graph). ✓
+
+        # Expander edges: slice the pre-generated tensor to the actual batch size.
+        # ExpanderEdgeFixer detects expander_edge_index and adds it to the
+        # attention graph alongside add_edge_index KG edges (if enabled).
+        if eval_exp_ei is not None:
+            data.expander_edge_index = eval_exp_ei[:, :B * E_exp]
 
         pred, _ = model(data)   # (B, N)
 
@@ -392,6 +422,10 @@ def train_epoch_kgc_full(logger, model, optimizer, scheduler, cfg, dataset):
     reps    = (needed + n_train - 1) // n_train
     indices = torch.randperm(n_train).repeat(reps)[:needed]  # (needed,)
 
+    # Static expander (generated once at dataset build time); tiled per step for B copies.
+    # cfg.prep.exp=False → full_expander_edge_index is None → no expander edges.
+    _base_exp_ei = kgc_ds.full_expander_edge_index   # (2, E_exp) or None
+
     time_start = time.time()
 
     for step_idx in range(steps):
@@ -407,32 +441,39 @@ def train_epoch_kgc_full(logger, model, optimizer, scheduler, cfg, dataset):
         chunk_t = chunk[:, 2]                      # (B,) long, on CPU
 
         # NBFNet-style query-edge removal (Zhu et al. 2021, Appendix B):
-        # Remove the direct answer edges (h→t, r) and related edges from the
-        # training graph so the model cannot cheat with a trivial 1-hop lookup.
-        # Without this, NLL→0 in epoch 1 and MRR plateaus at ~0.35 (1-hop ceiling).
-        # Currently requires train_batch_size=1 (B=1) since each query needs
-        # a different edge mask; generalising to B>1 needs per-graph offsets.
-        assert train_bs == 1, (
-            "Query-edge removal requires train_batch_size=1; "
-            f"got train_batch_size={train_bs}"
+        # Fully vectorized: tile B copies of the full graph then mask all
+        # query answer edges in one GPU pass — no Python for-loop.
+        #
+        # For graph copy i, remove edges (u→v, r) where {u,v}=={h_i,t_i}
+        # and r%bnr == chunk_r[i]%bnr (all 4 forms of the same base fact
+        # share the same %bnr value, so one check covers all).
+        E = full_edge_index.shape[1]
+        graph_idx = torch.arange(B, device=device).repeat_interleave(E)  # (B*E,)
+
+        # Tile edge index with per-graph offsets in one shot
+        src_tiled = full_edge_index[0].repeat(B) + graph_idx * N  # (B*E,)
+        dst_tiled = full_edge_index[1].repeat(B) + graph_idx * N  # (B*E,)
+        rel_tiled = full_edge_attr.repeat(B)                       # (B*E,)
+
+        # Per-edge query h/t/r_orig (broadcast from per-graph tensors)
+        h_g = torch.tensor(chunk_h, device=device, dtype=torch.long)[graph_idx]   # (B*E,)
+        t_g = chunk_t.to(device)[graph_idx]                                        # (B*E,)
+        r_g = torch.tensor(
+            [r % bnr for r in chunk_r], device=device, dtype=torch.long
+        )[graph_idx]                                                               # (B*E,)
+
+        # Local src/dst within each graph copy (strip offset for comparison)
+        src_loc = full_edge_index[0].repeat(B)  # same as src_tiled - graph_idx*N
+        dst_loc = full_edge_index[1].repeat(B)
+
+        is_ht = (
+            ((src_loc == h_g) & (dst_loc == t_g))
+            | ((src_loc == t_g) & (dst_loc == h_g))
         )
-        h_int = chunk_h[0]
-        t_int = int(chunk_t[0].item())
-        # Normalise to the base relation, then collect the 4 related IDs:
-        # original (r_orig), reciprocal (r_orig+bnr), and their structural
-        # reverses (+nr), which together describe the same fact in all forms.
-        r_orig = chunk_r[0] % bnr
-        rm_rels = torch.tensor(
-            [r_orig, r_orig + bnr, r_orig + nr, r_orig + bnr + nr],
-            device=device, dtype=torch.long,
-        )
-        ht = (
-            ((full_edge_index[0] == h_int) & (full_edge_index[1] == t_int))
-            | ((full_edge_index[0] == t_int) & (full_edge_index[1] == h_int))
-        )
-        keep   = ~(ht & torch.isin(full_edge_attr, rm_rels))
-        rep_ei = full_edge_index[:, keep]   # (2, E-k) where k<=4 removed
-        rep_ea = full_edge_attr[keep]        # (E-k,)
+        keep = ~(is_ht & (rel_tiled % bnr == r_g))
+
+        rep_ei = torch.stack([src_tiled[keep], dst_tiled[keep]], dim=0)  # (2, E')
+        rep_ea = rel_tiled[keep]                                           # (E',)
 
         batch_assign = torch.arange(B, device=device).repeat_interleave(N)
         ptr          = torch.arange(B + 1, device=device) * N
@@ -449,6 +490,12 @@ def train_epoch_kgc_full(logger, model, optimizer, scheduler, cfg, dataset):
         data.batch      = batch_assign
         data.ptr        = ptr
         data.num_graphs = B
+
+        # Expander edges: tile the static expander for B graph copies.
+        # ExpanderEdgeFixer merges them with the KG edges (add_edge_index).
+        # cfg.prep.exp=False → _base_exp_ei is None → no expander edges.
+        if _base_exp_ei is not None:
+            data.expander_edge_index = _tile_expander(_base_exp_ei, B, N, device)
 
         pred, _ = model(data)   # (B, N)
 

@@ -68,7 +68,7 @@ class ExphormerAttention(nn.Module):
         #   relation r carries different information than u->v' along relation r'.
         v_src = batch.V_h[edge_index[0].to(torch.long)]  # (E, heads, out_dim)
         if self.use_edge_gating:
-            gate = torch.sigmoid(batch.E_gate)            # (E, heads, out_dim)
+            gate = batch.E_gate                           # (E, heads, out_dim)
             v_src = v_src * gate
 
         msg = v_src * score

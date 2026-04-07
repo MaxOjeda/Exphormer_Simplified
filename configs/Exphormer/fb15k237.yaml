@@ -6,7 +6,7 @@ dataset:
   task_type: kgc_ranking
   node_encoder: True
   node_encoder_name: KGCNode
-  node_encoder_bn: False   # BN on zeros+one-hot init would suppress the signal
+  node_encoder_bn: False
   edge_encoder: True
   edge_encoder_name: RelationEmbedding
   edge_encoder_bn: False
@@ -16,25 +16,31 @@ kgc:
   subgraph_hops: 2
   max_nodes: 500
   eval_full_graph: True
-  eval_batch_size: 4    # FB15k-237 has ~1M edges; 8×E×B tensors → limit B
+  eval_batch_size: 8         # BF16 halves memory; safe on H100
+  train_full_graph: True
+  train_batch_size: 16
+  train_steps_per_epoch: 10205   # ceil(0.30 × 544230 / 16) ≈ 30% coverage, 1-GPU default
+                                  # For 100% coverage on 4 GPUs: override to 34015
+  label_smoothing: 0.0
 
 gt:
-  layer_type: CustomGatedGCN+Exphormer
-  layers: 6
-  n_heads: 8
-  dim_hidden: 256
-  dim_edge: 256
+  layer_type: Exphormer
+  layers: 5
+  n_heads: 4
+  dim_hidden: 64
+  dim_edge: 64
   dropout: 0.1
   attn_dropout: 0.1
-  layer_norm: False
-  batch_norm: True
-  use_edge_gating: True   # relation-conditioned V gate
+  layer_norm: True
+  batch_norm: False
+  use_edge_gating: True            # relation-conditioned V gate on values
+  use_query_conditioning: True     # condition attention scores on query relation r
 
 gnn:
   head: kgc
   layers_pre_mp: 0
   layers_post_mp: 0
-  dim_inner: 256
+  dim_inner: 64                    # must equal gt.dim_hidden
   dropout: 0.1
 
 prep:
@@ -42,7 +48,7 @@ prep:
   exp_deg: 3
   exp_algorithm: Random-d
   exp_max_num_iters: 100
-  exp_check_spectral: False   # skip eigenvalue loop: ~100× faster per-subgraph
+  exp_check_spectral: False
   add_edge_index: True
   num_virt_node: 0
 
@@ -53,18 +59,20 @@ posenc_EquivStableLapPE:
 
 optim:
   optimizer: adamW
-  base_lr: 0.0001
+  base_lr: 0.0002
   weight_decay: 1.0e-4
-  max_epoch: 200
+  max_epoch: 100
   scheduler: cosine_with_warmup
-  num_warmup_epochs: 10
+  num_warmup_epochs: 5
+  clip_grad_norm: True
 
 train:
   batch_size: 256
-  eval_period: 5
-  ckpt_period: 25
+  eval_period: 2
+  ckpt_period: 10
   enable_ckpt: True
   ckpt_best: True
+  grad_checkpoint: True
 
 model:
   type: MultiModel
@@ -74,4 +82,6 @@ metric_best: mrr
 metric_agg: argmax
 
 wandb:
-  use: False
+  use: False          # override with wandb.use True in sbatch scripts
+  entity: maxojeda
+  project: exphormer-kgc

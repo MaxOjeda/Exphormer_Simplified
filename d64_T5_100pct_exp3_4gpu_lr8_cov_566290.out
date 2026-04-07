@@ -1,0 +1,1036 @@
+=== GPU Info ===
+NVIDIA H100 NVL, 95830 MiB
+NVIDIA H100 NVL, 95830 MiB
+NVIDIA H100 NVL, 95830 MiB
+NVIDIA H100 NVL, 95830 MiB
+=== Start: Fri Apr  3 01:59:07 PM -03 2026 ===
+W0403 13:59:08.275000 139844270282560 torch/distributed/run.py:757] 
+W0403 13:59:08.275000 139844270282560 torch/distributed/run.py:757] *****************************************
+W0403 13:59:08.275000 139844270282560 torch/distributed/run.py:757] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0403 13:59:08.275000 139844270282560 torch/distributed/run.py:757] *****************************************
+2026-04-03 13:59:16,342 INFO Device: cuda
+2026-04-03 13:59:16,342 INFO [*] Run ID 0: seed=0, split_index=0
+2026-04-03 13:59:16,342 INFO     Starting now: 2026-04-03 13:59:16.342274
+2026-04-03 13:59:16,342 INFO Loading WordNet18RR from ./datasets/WN18RR
+2026-04-03 13:59:16,906 INFO Generating static full-KG expander (N=40943, deg=3) ...
+2026-04-03 13:59:17,012 INFO   Expander edges: 245658
+2026-04-03 13:59:17,012 INFO KGCDataset loaded: 40943 entities, 22 relations (reciprocal=True), 173670 train / 3034 val / 3134 test triples
+2026-04-03 13:59:17,012 INFO Loading subgraph cache: ./datasets/wn18rr/subgraph_cache/train_h2_n500_rec.pt
+2026-04-03 13:59:53,124 INFO   173670/173670 subgraphs loaded for train split
+2026-04-03 13:59:53,124 INFO Loading subgraph cache: ./datasets/wn18rr/subgraph_cache/val_h2_n500_rec.pt
+2026-04-03 13:59:53,559 INFO   3034/3034 subgraphs loaded for val split
+2026-04-03 13:59:53,559 INFO Loading subgraph cache: ./datasets/wn18rr/subgraph_cache/test_h2_n500_rec.pt
+2026-04-03 13:59:54,011 INFO   3134/3134 subgraphs loaded for test split
+2026-04-03 13:59:54,011 INFO Skipping subgraph cache (full-graph train+eval mode active).
+2026-04-03 13:59:54,011 INFO [*] Loaded KGC dataset 'WN18RR': 40943 entities, 22 relations, 22 edge types (reciprocal=True), 173670 train / 3034 val / 3134 test queries
+2026-04-03 13:59:54,012 INFO dim_in=1, dim_out=1
+2026-04-03 13:59:54,903 INFO DDP enabled on 4 GPUs.
+2026-04-03 13:59:54,904 INFO DistributedDataParallel(
+  (module): MultiModel(
+    (encoder): FeatureEncoder(
+      (node_encoder): KGCNodeEncoder(
+        (rel_emb): Embedding(22, 64)
+      )
+      (edge_encoder): RelationEmbeddingEncoder(
+        (emb): Embedding(22, 64)
+      )
+      (exp_edge_fixer): ExpanderEdgeFixer(
+        (exp_edge_attr): Embedding(1, 64)
+      )
+    )
+    (layers): Sequential(
+      (0): MultiLayer(
+        dim_h=64, model_types=['Exphormer']
+        (models): ModuleList(
+          (0): GlobalModel(
+            (self_attn): ExphormerAttention(
+              (Q): Linear(in_features=64, out_features=64, bias=False)
+              (K): Linear(in_features=64, out_features=64, bias=False)
+              (E): Linear(in_features=64, out_features=64, bias=False)
+              (V): Linear(in_features=64, out_features=64, bias=False)
+              (V_gate): Linear(in_features=64, out_features=64, bias=False)
+              (Q_cond): Embedding(22, 64)
+              (E_query): Embedding(22, 64)
+              (V_gate_query): Embedding(22, 64)
+            )
+            (norm1_attn): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+            (dropout_attn): Dropout(p=0.1, inplace=False)
+          )
+        )
+        (ff_linear1): Linear(in_features=64, out_features=128, bias=True)
+        (ff_linear2): Linear(in_features=128, out_features=64, bias=True)
+        (norm2): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+        (ff_dropout1): Dropout(p=0.1, inplace=False)
+        (ff_dropout2): Dropout(p=0.1, inplace=False)
+      )
+      (1): MultiLayer(
+        dim_h=64, model_types=['Exphormer']
+        (models): ModuleList(
+          (0): GlobalModel(
+            (self_attn): ExphormerAttention(
+              (Q): Linear(in_features=64, out_features=64, bias=False)
+              (K): Linear(in_features=64, out_features=64, bias=False)
+              (E): Linear(in_features=64, out_features=64, bias=False)
+              (V): Linear(in_features=64, out_features=64, bias=False)
+              (V_gate): Linear(in_features=64, out_features=64, bias=False)
+              (Q_cond): Embedding(22, 64)
+              (E_query): Embedding(22, 64)
+              (V_gate_query): Embedding(22, 64)
+            )
+            (norm1_attn): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+            (dropout_attn): Dropout(p=0.1, inplace=False)
+          )
+        )
+        (ff_linear1): Linear(in_features=64, out_features=128, bias=True)
+        (ff_linear2): Linear(in_features=128, out_features=64, bias=True)
+        (norm2): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+        (ff_dropout1): Dropout(p=0.1, inplace=False)
+        (ff_dropout2): Dropout(p=0.1, inplace=False)
+      )
+      (2): MultiLayer(
+        dim_h=64, model_types=['Exphormer']
+        (models): ModuleList(
+          (0): GlobalModel(
+            (self_attn): ExphormerAttention(
+              (Q): Linear(in_features=64, out_features=64, bias=False)
+              (K): Linear(in_features=64, out_features=64, bias=False)
+              (E): Linear(in_features=64, out_features=64, bias=False)
+              (V): Linear(in_features=64, out_features=64, bias=False)
+              (V_gate): Linear(in_features=64, out_features=64, bias=False)
+              (Q_cond): Embedding(22, 64)
+              (E_query): Embedding(22, 64)
+              (V_gate_query): Embedding(22, 64)
+            )
+            (norm1_attn): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+            (dropout_attn): Dropout(p=0.1, inplace=False)
+          )
+        )
+        (ff_linear1): Linear(in_features=64, out_features=128, bias=True)
+        (ff_linear2): Linear(in_features=128, out_features=64, bias=True)
+        (norm2): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+        (ff_dropout1): Dropout(p=0.1, inplace=False)
+        (ff_dropout2): Dropout(p=0.1, inplace=False)
+      )
+      (3): MultiLayer(
+        dim_h=64, model_types=['Exphormer']
+        (models): ModuleList(
+          (0): GlobalModel(
+            (self_attn): ExphormerAttention(
+              (Q): Linear(in_features=64, out_features=64, bias=False)
+              (K): Linear(in_features=64, out_features=64, bias=False)
+              (E): Linear(in_features=64, out_features=64, bias=False)
+              (V): Linear(in_features=64, out_features=64, bias=False)
+              (V_gate): Linear(in_features=64, out_features=64, bias=False)
+              (Q_cond): Embedding(22, 64)
+              (E_query): Embedding(22, 64)
+              (V_gate_query): Embedding(22, 64)
+            )
+            (norm1_attn): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+            (dropout_attn): Dropout(p=0.1, inplace=False)
+          )
+        )
+        (ff_linear1): Linear(in_features=64, out_features=128, bias=True)
+        (ff_linear2): Linear(in_features=128, out_features=64, bias=True)
+        (norm2): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+        (ff_dropout1): Dropout(p=0.1, inplace=False)
+        (ff_dropout2): Dropout(p=0.1, inplace=False)
+      )
+      (4): MultiLayer(
+        dim_h=64, model_types=['Exphormer']
+        (models): ModuleList(
+          (0): GlobalModel(
+            (self_attn): ExphormerAttention(
+              (Q): Linear(in_features=64, out_features=64, bias=False)
+              (K): Linear(in_features=64, out_features=64, bias=False)
+              (E): Linear(in_features=64, out_features=64, bias=False)
+              (V): Linear(in_features=64, out_features=64, bias=False)
+              (V_gate): Linear(in_features=64, out_features=64, bias=False)
+              (Q_cond): Embedding(22, 64)
+              (E_query): Embedding(22, 64)
+              (V_gate_query): Embedding(22, 64)
+            )
+            (norm1_attn): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+            (dropout_attn): Dropout(p=0.1, inplace=False)
+          )
+        )
+        (ff_linear1): Linear(in_features=64, out_features=128, bias=True)
+        (ff_linear2): Linear(in_features=128, out_features=64, bias=True)
+        (norm2): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+        (ff_dropout1): Dropout(p=0.1, inplace=False)
+        (ff_dropout2): Dropout(p=0.1, inplace=False)
+      )
+    )
+    (post_mp): KGCHead(
+      (rel_emb): Embedding(22, 64)
+      (scorer): Linear(in_features=128, out_features=1, bias=True)
+      (drop): Dropout(p=0.1, inplace=False)
+    )
+  )
+)
+2026-04-03 13:59:54,905 INFO Num parameters: 212,097
+2026-04-03 13:59:54,905 INFO Starting from epoch 0
+2026-04-03 14:50:35,341 INFO train: {'epoch': 0, 'time_epoch': 3039.55488, 'loss': 10.63552067, 'lr': 0.0, 'params': 212097, 'time_iter': 1.12037, 'subgraph_hits@1': 9.215e-05}
+2026-04-03 14:50:35,376 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 14:50:41,832 INFO   eval_kgc [val]: 504/6068
+2026-04-03 14:50:48,095 INFO   eval_kgc [val]: 1000/6068
+2026-04-03 14:50:54,477 INFO   eval_kgc [val]: 1504/6068
+2026-04-03 14:51:00,780 INFO   eval_kgc [val]: 2000/6068
+2026-04-03 14:51:07,211 INFO   eval_kgc [val]: 2504/6068
+2026-04-03 14:51:13,551 INFO   eval_kgc [val]: 3000/6068
+2026-04-03 14:51:20,018 INFO   eval_kgc [val]: 3504/6068
+2026-04-03 14:51:26,401 INFO   eval_kgc [val]: 4000/6068
+2026-04-03 14:51:32,904 INFO   eval_kgc [val]: 4504/6068
+2026-04-03 14:51:39,301 INFO   eval_kgc [val]: 5000/6068
+2026-04-03 14:51:45,767 INFO   eval_kgc [val]: 5504/6068
+2026-04-03 14:51:52,189 INFO   eval_kgc [val]: 6000/6068
+2026-04-03 14:51:53,070 INFO   eval_kgc [val]: 6068/6068
+2026-04-03 14:51:53,071 INFO val: {'epoch': 0, 'time_epoch': 77.68095, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10235, 'mrr': 0.0802714, 'hits@1': 0.00659196, 'hits@3': 0.10316414, 'hits@10': 0.29894528}
+2026-04-03 14:51:53,081 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 14:51:59,550 INFO   eval_kgc [test]: 504/6268
+2026-04-03 14:52:05,824 INFO   eval_kgc [test]: 1000/6268
+2026-04-03 14:52:12,217 INFO   eval_kgc [test]: 1504/6268
+2026-04-03 14:52:18,512 INFO   eval_kgc [test]: 2000/6268
+2026-04-03 14:52:24,911 INFO   eval_kgc [test]: 2504/6268
+2026-04-03 14:52:31,223 INFO   eval_kgc [test]: 3000/6268
+2026-04-03 14:52:37,671 INFO   eval_kgc [test]: 3504/6268
+2026-04-03 14:52:44,035 INFO   eval_kgc [test]: 4000/6268
+2026-04-03 14:52:50,503 INFO   eval_kgc [test]: 4504/6268
+2026-04-03 14:52:56,869 INFO   eval_kgc [test]: 5000/6268
+2026-04-03 14:53:03,351 INFO   eval_kgc [test]: 5504/6268
+2026-04-03 14:53:09,837 INFO   eval_kgc [test]: 6000/6268
+2026-04-03 14:53:13,308 INFO   eval_kgc [test]: 6268/6268
+2026-04-03 14:53:13,310 INFO test: {'epoch': 0, 'time_epoch': 80.21394, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10231, 'mrr': 0.08033024, 'hits@1': 0.00861519, 'hits@3': 0.10019145, 'hits@10': 0.29897895}
+2026-04-03 14:53:13,329 INFO > Epoch 0: took 3198.4s (avg 3198.4s) | Best so far: epoch 0	train_loss: 10.6355 	val_loss: 0.0000 val_mrr: 0.0803	test_loss: 0.0000 test_mrr: 0.0803
+2026-04-03 15:43:52,017 INFO train: {'epoch': 1, 'time_epoch': 3037.69894, 'loss': 6.40782939, 'lr': 0.00016, 'params': 212097, 'time_iter': 1.11968, 'subgraph_hits@1': 0.14734611}
+2026-04-03 15:43:52,050 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 15:43:58,511 INFO   eval_kgc [val]: 504/6068
+2026-04-03 15:44:04,774 INFO   eval_kgc [val]: 1000/6068
+2026-04-03 15:44:11,154 INFO   eval_kgc [val]: 1504/6068
+2026-04-03 15:44:17,454 INFO   eval_kgc [val]: 2000/6068
+2026-04-03 15:44:23,888 INFO   eval_kgc [val]: 2504/6068
+2026-04-03 15:44:30,230 INFO   eval_kgc [val]: 3000/6068
+2026-04-03 15:44:36,706 INFO   eval_kgc [val]: 3504/6068
+2026-04-03 15:44:43,087 INFO   eval_kgc [val]: 4000/6068
+2026-04-03 15:44:49,568 INFO   eval_kgc [val]: 4504/6068
+2026-04-03 15:44:55,937 INFO   eval_kgc [val]: 5000/6068
+2026-04-03 15:45:02,397 INFO   eval_kgc [val]: 5504/6068
+2026-04-03 15:45:08,843 INFO   eval_kgc [val]: 6000/6068
+2026-04-03 15:45:09,734 INFO   eval_kgc [val]: 6068/6068
+2026-04-03 15:45:09,736 INFO val: {'epoch': 1, 'time_epoch': 77.67146, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10233, 'mrr': 0.33180279, 'hits@1': 0.21736981, 'hits@3': 0.38497034, 'hits@10': 0.57333553}
+2026-04-03 15:45:09,746 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 15:45:16,277 INFO   eval_kgc [test]: 504/6268
+2026-04-03 15:45:22,635 INFO   eval_kgc [test]: 1000/6268
+2026-04-03 15:45:29,088 INFO   eval_kgc [test]: 1504/6268
+2026-04-03 15:45:35,401 INFO   eval_kgc [test]: 2000/6268
+2026-04-03 15:45:41,819 INFO   eval_kgc [test]: 2504/6268
+2026-04-03 15:45:48,160 INFO   eval_kgc [test]: 3000/6268
+2026-04-03 15:45:54,623 INFO   eval_kgc [test]: 3504/6268
+2026-04-03 15:46:01,005 INFO   eval_kgc [test]: 4000/6268
+2026-04-03 15:46:07,465 INFO   eval_kgc [test]: 4504/6268
+2026-04-03 15:46:13,818 INFO   eval_kgc [test]: 5000/6268
+2026-04-03 15:46:20,312 INFO   eval_kgc [test]: 5504/6268
+2026-04-03 15:46:26,807 INFO   eval_kgc [test]: 6000/6268
+2026-04-03 15:46:30,293 INFO   eval_kgc [test]: 6268/6268
+2026-04-03 15:46:30,295 INFO test: {'epoch': 1, 'time_epoch': 80.53343, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10272, 'mrr': 0.33227858, 'hits@1': 0.22192086, 'hits@3': 0.37683472, 'hits@10': 0.56764519}
+2026-04-03 15:46:30,314 INFO > Epoch 1: took 3197.0s (avg 3197.7s) | Best so far: epoch 1	train_loss: 6.4078 	val_loss: 0.0000 val_mrr: 0.3318	test_loss: 0.0000 test_mrr: 0.3323
+2026-04-03 16:37:14,412 INFO train: {'epoch': 2, 'time_epoch': 3043.11006, 'loss': 5.6576307, 'lr': 0.00032, 'params': 212097, 'time_iter': 1.12168, 'subgraph_hits@1': 0.17558976}
+2026-04-03 16:37:14,449 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 16:37:20,912 INFO   eval_kgc [val]: 504/6068
+2026-04-03 16:37:27,197 INFO   eval_kgc [val]: 1000/6068
+2026-04-03 16:37:33,635 INFO   eval_kgc [val]: 1504/6068
+2026-04-03 16:37:39,952 INFO   eval_kgc [val]: 2000/6068
+2026-04-03 16:37:46,394 INFO   eval_kgc [val]: 2504/6068
+2026-04-03 16:37:52,734 INFO   eval_kgc [val]: 3000/6068
+2026-04-03 16:37:59,205 INFO   eval_kgc [val]: 3504/6068
+2026-04-03 16:38:05,580 INFO   eval_kgc [val]: 4000/6068
+2026-04-03 16:38:12,064 INFO   eval_kgc [val]: 4504/6068
+2026-04-03 16:38:18,477 INFO   eval_kgc [val]: 5000/6068
+2026-04-03 16:38:24,980 INFO   eval_kgc [val]: 5504/6068
+2026-04-03 16:38:31,456 INFO   eval_kgc [val]: 6000/6068
+2026-04-03 16:38:32,344 INFO   eval_kgc [val]: 6068/6068
+2026-04-03 16:38:32,345 INFO val: {'epoch': 2, 'time_epoch': 77.88242, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10261, 'mrr': 0.43614283, 'hits@1': 0.3282795, 'hits@3': 0.50065917, 'hits@10': 0.64403427}
+2026-04-03 16:38:32,354 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 16:38:38,846 INFO   eval_kgc [test]: 504/6268
+2026-04-03 16:38:45,112 INFO   eval_kgc [test]: 1000/6268
+2026-04-03 16:38:51,478 INFO   eval_kgc [test]: 1504/6268
+2026-04-03 16:38:57,776 INFO   eval_kgc [test]: 2000/6268
+2026-04-03 16:39:04,217 INFO   eval_kgc [test]: 2504/6268
+2026-04-03 16:39:10,558 INFO   eval_kgc [test]: 3000/6268
+2026-04-03 16:39:17,019 INFO   eval_kgc [test]: 3504/6268
+2026-04-03 16:39:23,397 INFO   eval_kgc [test]: 4000/6268
+2026-04-03 16:39:29,876 INFO   eval_kgc [test]: 4504/6268
+2026-04-03 16:39:36,242 INFO   eval_kgc [test]: 5000/6268
+2026-04-03 16:39:42,732 INFO   eval_kgc [test]: 5504/6268
+2026-04-03 16:39:49,219 INFO   eval_kgc [test]: 6000/6268
+2026-04-03 16:39:52,693 INFO   eval_kgc [test]: 6268/6268
+2026-04-03 16:39:52,695 INFO test: {'epoch': 2, 'time_epoch': 80.32505, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10246, 'mrr': 0.43830809, 'hits@1': 0.32881302, 'hits@3': 0.50526482, 'hits@10': 0.64645821}
+2026-04-03 16:39:52,714 INFO > Epoch 2: took 3202.4s (avg 3199.3s) | Best so far: epoch 2	train_loss: 5.6576 	val_loss: 0.0000 val_mrr: 0.4361	test_loss: 0.0000 test_mrr: 0.4383
+2026-04-03 17:30:33,491 INFO train: {'epoch': 3, 'time_epoch': 3039.94622, 'loss': 5.46411646, 'lr': 0.00048, 'params': 212097, 'time_iter': 1.12051, 'subgraph_hits@1': 0.18307686}
+2026-04-03 17:30:33,523 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 17:30:39,995 INFO   eval_kgc [val]: 504/6068
+2026-04-03 17:30:46,322 INFO   eval_kgc [val]: 1000/6068
+2026-04-03 17:30:52,771 INFO   eval_kgc [val]: 1504/6068
+2026-04-03 17:30:59,120 INFO   eval_kgc [val]: 2000/6068
+2026-04-03 17:31:05,590 INFO   eval_kgc [val]: 2504/6068
+2026-04-03 17:31:11,957 INFO   eval_kgc [val]: 3000/6068
+2026-04-03 17:31:18,457 INFO   eval_kgc [val]: 3504/6068
+2026-04-03 17:31:24,845 INFO   eval_kgc [val]: 4000/6068
+2026-04-03 17:31:31,330 INFO   eval_kgc [val]: 4504/6068
+2026-04-03 17:31:37,723 INFO   eval_kgc [val]: 5000/6068
+2026-04-03 17:31:44,204 INFO   eval_kgc [val]: 5504/6068
+2026-04-03 17:31:50,659 INFO   eval_kgc [val]: 6000/6068
+2026-04-03 17:31:51,548 INFO   eval_kgc [val]: 6068/6068
+2026-04-03 17:31:51,549 INFO val: {'epoch': 3, 'time_epoch': 78.0125, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10278, 'mrr': 0.49275279, 'hits@1': 0.40013185, 'hits@3': 0.55108768, 'hits@10': 0.66117334}
+2026-04-03 17:31:51,558 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 17:31:58,070 INFO   eval_kgc [test]: 504/6268
+2026-04-03 17:32:04,404 INFO   eval_kgc [test]: 1000/6268
+2026-04-03 17:32:10,850 INFO   eval_kgc [test]: 1504/6268
+2026-04-03 17:32:17,189 INFO   eval_kgc [test]: 2000/6268
+2026-04-03 17:32:23,620 INFO   eval_kgc [test]: 2504/6268
+2026-04-03 17:32:29,953 INFO   eval_kgc [test]: 3000/6268
+2026-04-03 17:32:36,373 INFO   eval_kgc [test]: 3504/6268
+2026-04-03 17:32:42,728 INFO   eval_kgc [test]: 4000/6268
+2026-04-03 17:32:49,192 INFO   eval_kgc [test]: 4504/6268
+2026-04-03 17:32:55,560 INFO   eval_kgc [test]: 5000/6268
+2026-04-03 17:33:02,058 INFO   eval_kgc [test]: 5504/6268
+2026-04-03 17:33:08,550 INFO   eval_kgc [test]: 6000/6268
+2026-04-03 17:33:12,030 INFO   eval_kgc [test]: 6268/6268
+2026-04-03 17:33:12,032 INFO test: {'epoch': 3, 'time_epoch': 80.45935, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10263, 'mrr': 0.4947207, 'hits@1': 0.40459478, 'hits@3': 0.54897892, 'hits@10': 0.66049778}
+2026-04-03 17:33:12,051 INFO > Epoch 3: took 3199.3s (avg 3199.3s) | Best so far: epoch 3	train_loss: 5.4641 	val_loss: 0.0000 val_mrr: 0.4928	test_loss: 0.0000 test_mrr: 0.4947
+2026-04-03 18:23:54,412 INFO train: {'epoch': 4, 'time_epoch': 3041.65107, 'loss': 5.39718281, 'lr': 0.00064, 'params': 212097, 'time_iter': 1.12114, 'subgraph_hits@1': 0.18263915}
+2026-04-03 18:23:54,442 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 18:24:00,874 INFO   eval_kgc [val]: 504/6068
+2026-04-03 18:24:07,134 INFO   eval_kgc [val]: 1000/6068
+2026-04-03 18:24:13,508 INFO   eval_kgc [val]: 1504/6068
+2026-04-03 18:24:19,809 INFO   eval_kgc [val]: 2000/6068
+2026-04-03 18:24:26,240 INFO   eval_kgc [val]: 2504/6068
+2026-04-03 18:24:32,584 INFO   eval_kgc [val]: 3000/6068
+2026-04-03 18:24:39,063 INFO   eval_kgc [val]: 3504/6068
+2026-04-03 18:24:45,444 INFO   eval_kgc [val]: 4000/6068
+2026-04-03 18:24:51,944 INFO   eval_kgc [val]: 4504/6068
+2026-04-03 18:24:58,337 INFO   eval_kgc [val]: 5000/6068
+2026-04-03 18:25:04,795 INFO   eval_kgc [val]: 5504/6068
+2026-04-03 18:25:11,209 INFO   eval_kgc [val]: 6000/6068
+2026-04-03 18:25:12,091 INFO   eval_kgc [val]: 6068/6068
+2026-04-03 18:25:12,092 INFO val: {'epoch': 4, 'time_epoch': 77.63791, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10229, 'mrr': 0.52084315, 'hits@1': 0.44001317, 'hits@3': 0.57053393, 'hits@10': 0.66842455}
+2026-04-03 18:25:12,100 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 18:25:18,568 INFO   eval_kgc [test]: 504/6268
+2026-04-03 18:25:24,830 INFO   eval_kgc [test]: 1000/6268
+2026-04-03 18:25:31,216 INFO   eval_kgc [test]: 1504/6268
+2026-04-03 18:25:37,516 INFO   eval_kgc [test]: 2000/6268
+2026-04-03 18:25:43,924 INFO   eval_kgc [test]: 2504/6268
+2026-04-03 18:25:50,261 INFO   eval_kgc [test]: 3000/6268
+2026-04-03 18:25:56,719 INFO   eval_kgc [test]: 3504/6268
+2026-04-03 18:26:03,097 INFO   eval_kgc [test]: 4000/6268
+2026-04-03 18:26:09,559 INFO   eval_kgc [test]: 4504/6268
+2026-04-03 18:26:15,921 INFO   eval_kgc [test]: 5000/6268
+2026-04-03 18:26:22,415 INFO   eval_kgc [test]: 5504/6268
+2026-04-03 18:26:28,916 INFO   eval_kgc [test]: 6000/6268
+2026-04-03 18:26:32,391 INFO   eval_kgc [test]: 6268/6268
+2026-04-03 18:26:32,392 INFO test: {'epoch': 4, 'time_epoch': 80.27774, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.1024, 'mrr': 0.52406108, 'hits@1': 0.44591576, 'hits@3': 0.56924057, 'hits@10': 0.67007017}
+2026-04-03 18:26:32,409 INFO > Epoch 4: took 3200.3s (avg 3199.5s) | Best so far: epoch 4	train_loss: 5.3972 	val_loss: 0.0000 val_mrr: 0.5208	test_loss: 0.0000 test_mrr: 0.5241
+2026-04-03 19:17:08,262 INFO train: {'epoch': 5, 'time_epoch': 3035.13124, 'loss': 5.34737945, 'lr': 0.0008, 'params': 212097, 'time_iter': 1.11874, 'subgraph_hits@1': 0.17929874}
+2026-04-03 19:17:08,292 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 19:17:14,734 INFO   eval_kgc [val]: 504/6068
+2026-04-03 19:17:21,014 INFO   eval_kgc [val]: 1000/6068
+2026-04-03 19:17:27,406 INFO   eval_kgc [val]: 1504/6068
+2026-04-03 19:17:33,722 INFO   eval_kgc [val]: 2000/6068
+2026-04-03 19:17:40,166 INFO   eval_kgc [val]: 2504/6068
+2026-04-03 19:17:46,510 INFO   eval_kgc [val]: 3000/6068
+2026-04-03 19:17:52,998 INFO   eval_kgc [val]: 3504/6068
+2026-04-03 19:17:59,388 INFO   eval_kgc [val]: 4000/6068
+2026-04-03 19:18:05,881 INFO   eval_kgc [val]: 4504/6068
+2026-04-03 19:18:12,273 INFO   eval_kgc [val]: 5000/6068
+2026-04-03 19:18:18,731 INFO   eval_kgc [val]: 5504/6068
+2026-04-03 19:18:25,181 INFO   eval_kgc [val]: 6000/6068
+2026-04-03 19:18:26,068 INFO   eval_kgc [val]: 6068/6068
+2026-04-03 19:18:26,070 INFO val: {'epoch': 5, 'time_epoch': 77.76635, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10246, 'mrr': 0.51287645, 'hits@1': 0.42336848, 'hits@3': 0.57218194, 'hits@10': 0.66793013}
+2026-04-03 19:18:26,078 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 19:18:32,594 INFO   eval_kgc [test]: 504/6268
+2026-04-03 19:18:38,935 INFO   eval_kgc [test]: 1000/6268
+2026-04-03 19:18:45,396 INFO   eval_kgc [test]: 1504/6268
+2026-04-03 19:18:51,759 INFO   eval_kgc [test]: 2000/6268
+2026-04-03 19:18:58,229 INFO   eval_kgc [test]: 2504/6268
+2026-04-03 19:19:04,589 INFO   eval_kgc [test]: 3000/6268
+2026-04-03 19:19:11,051 INFO   eval_kgc [test]: 3504/6268
+2026-04-03 19:19:17,407 INFO   eval_kgc [test]: 4000/6268
+2026-04-03 19:19:23,862 INFO   eval_kgc [test]: 4504/6268
+2026-04-03 19:19:30,240 INFO   eval_kgc [test]: 5000/6268
+2026-04-03 19:19:36,751 INFO   eval_kgc [test]: 5504/6268
+2026-04-03 19:19:43,256 INFO   eval_kgc [test]: 6000/6268
+2026-04-03 19:19:46,742 INFO   eval_kgc [test]: 6268/6268
+2026-04-03 19:19:46,744 INFO test: {'epoch': 5, 'time_epoch': 80.65221, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10287, 'mrr': 0.51434803, 'hits@1': 0.42645183, 'hits@3': 0.57306957, 'hits@10': 0.67007017}
+2026-04-03 19:19:46,745 INFO > Epoch 5: took 3194.3s (avg 3198.6s) | Best so far: epoch 4	train_loss: 5.3972 	val_loss: 0.0000 val_mrr: 0.5208	test_loss: 0.0000 test_mrr: 0.5241
+2026-04-03 20:10:32,607 INFO train: {'epoch': 6, 'time_epoch': 3045.1656, 'loss': 5.3413515, 'lr': 0.00079978, 'params': 212097, 'time_iter': 1.12243, 'subgraph_hits@1': 0.18015112}
+2026-04-03 20:10:32,637 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 20:10:39,073 INFO   eval_kgc [val]: 504/6068
+2026-04-03 20:10:45,359 INFO   eval_kgc [val]: 1000/6068
+2026-04-03 20:10:51,761 INFO   eval_kgc [val]: 1504/6068
+2026-04-03 20:10:58,099 INFO   eval_kgc [val]: 2000/6068
+2026-04-03 20:11:04,542 INFO   eval_kgc [val]: 2504/6068
+2026-04-03 20:11:10,893 INFO   eval_kgc [val]: 3000/6068
+2026-04-03 20:11:17,361 INFO   eval_kgc [val]: 3504/6068
+2026-04-03 20:11:23,742 INFO   eval_kgc [val]: 4000/6068
+2026-04-03 20:11:30,218 INFO   eval_kgc [val]: 4504/6068
+2026-04-03 20:11:36,591 INFO   eval_kgc [val]: 5000/6068
+2026-04-03 20:11:43,045 INFO   eval_kgc [val]: 5504/6068
+2026-04-03 20:11:49,506 INFO   eval_kgc [val]: 6000/6068
+2026-04-03 20:11:50,396 INFO   eval_kgc [val]: 6068/6068
+2026-04-03 20:11:50,398 INFO val: {'epoch': 6, 'time_epoch': 77.74701, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10243, 'mrr': 0.50883335, 'hits@1': 0.41496375, 'hits@3': 0.57185233, 'hits@10': 0.67419249}
+2026-04-03 20:11:50,406 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 20:11:56,916 INFO   eval_kgc [test]: 504/6268
+2026-04-03 20:12:03,269 INFO   eval_kgc [test]: 1000/6268
+2026-04-03 20:12:09,726 INFO   eval_kgc [test]: 1504/6268
+2026-04-03 20:12:16,071 INFO   eval_kgc [test]: 2000/6268
+2026-04-03 20:12:22,496 INFO   eval_kgc [test]: 2504/6268
+2026-04-03 20:12:28,771 INFO   eval_kgc [test]: 3000/6268
+2026-04-03 20:12:35,148 INFO   eval_kgc [test]: 3504/6268
+2026-04-03 20:12:41,473 INFO   eval_kgc [test]: 4000/6268
+2026-04-03 20:12:47,924 INFO   eval_kgc [test]: 4504/6268
+2026-04-03 20:12:54,292 INFO   eval_kgc [test]: 5000/6268
+2026-04-03 20:13:00,796 INFO   eval_kgc [test]: 5504/6268
+2026-04-03 20:13:07,289 INFO   eval_kgc [test]: 6000/6268
+2026-04-03 20:13:10,771 INFO   eval_kgc [test]: 6268/6268
+2026-04-03 20:13:10,772 INFO test: {'epoch': 6, 'time_epoch': 80.35243, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10249, 'mrr': 0.51581299, 'hits@1': 0.42389917, 'hits@3': 0.57961071, 'hits@10': 0.67038929}
+2026-04-03 20:13:10,773 INFO > Epoch 6: took 3204.0s (avg 3199.4s) | Best so far: epoch 4	train_loss: 5.3972 	val_loss: 0.0000 val_mrr: 0.5208	test_loss: 0.0000 test_mrr: 0.5241
+2026-04-03 21:03:45,599 INFO train: {'epoch': 7, 'time_epoch': 3034.11061, 'loss': 5.26941875, 'lr': 0.00079913, 'params': 212097, 'time_iter': 1.11836, 'subgraph_hits@1': 0.18358368}
+2026-04-03 21:03:45,629 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 21:03:52,091 INFO   eval_kgc [val]: 504/6068
+2026-04-03 21:03:58,396 INFO   eval_kgc [val]: 1000/6068
+2026-04-03 21:04:04,829 INFO   eval_kgc [val]: 1504/6068
+2026-04-03 21:04:11,164 INFO   eval_kgc [val]: 2000/6068
+2026-04-03 21:04:17,615 INFO   eval_kgc [val]: 2504/6068
+2026-04-03 21:04:23,957 INFO   eval_kgc [val]: 3000/6068
+2026-04-03 21:04:30,441 INFO   eval_kgc [val]: 3504/6068
+2026-04-03 21:04:36,816 INFO   eval_kgc [val]: 4000/6068
+2026-04-03 21:04:43,301 INFO   eval_kgc [val]: 4504/6068
+2026-04-03 21:04:49,678 INFO   eval_kgc [val]: 5000/6068
+2026-04-03 21:04:56,150 INFO   eval_kgc [val]: 5504/6068
+2026-04-03 21:05:02,616 INFO   eval_kgc [val]: 6000/6068
+2026-04-03 21:05:03,507 INFO   eval_kgc [val]: 6068/6068
+2026-04-03 21:05:03,508 INFO val: {'epoch': 7, 'time_epoch': 77.86559, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10259, 'mrr': 0.54245561, 'hits@1': 0.46769941, 'hits@3': 0.58783782, 'hits@10': 0.67402768}
+2026-04-03 21:05:03,516 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 21:05:10,030 INFO   eval_kgc [test]: 504/6268
+2026-04-03 21:05:16,367 INFO   eval_kgc [test]: 1000/6268
+2026-04-03 21:05:22,806 INFO   eval_kgc [test]: 1504/6268
+2026-04-03 21:05:29,092 INFO   eval_kgc [test]: 2000/6268
+2026-04-03 21:05:35,473 INFO   eval_kgc [test]: 2504/6268
+2026-04-03 21:05:41,757 INFO   eval_kgc [test]: 3000/6268
+2026-04-03 21:05:48,193 INFO   eval_kgc [test]: 3504/6268
+2026-04-03 21:05:54,566 INFO   eval_kgc [test]: 4000/6268
+2026-04-03 21:06:01,039 INFO   eval_kgc [test]: 4504/6268
+2026-04-03 21:06:07,433 INFO   eval_kgc [test]: 5000/6268
+2026-04-03 21:06:13,934 INFO   eval_kgc [test]: 5504/6268
+2026-04-03 21:06:20,409 INFO   eval_kgc [test]: 6000/6268
+2026-04-03 21:06:23,884 INFO   eval_kgc [test]: 6268/6268
+2026-04-03 21:06:23,886 INFO test: {'epoch': 7, 'time_epoch': 80.35581, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10249, 'mrr': 0.54710495, 'hits@1': 0.47527122, 'hits@3': 0.59109765, 'hits@10': 0.67708999}
+2026-04-03 21:06:23,902 INFO > Epoch 7: took 3193.1s (avg 3198.6s) | Best so far: epoch 7	train_loss: 5.2694 	val_loss: 0.0000 val_mrr: 0.5425	test_loss: 0.0000 test_mrr: 0.5471
+2026-04-03 21:57:03,182 INFO train: {'epoch': 8, 'time_epoch': 3038.57176, 'loss': 5.27226087, 'lr': 0.00079803, 'params': 212097, 'time_iter': 1.12, 'subgraph_hits@1': 0.18547273}
+2026-04-03 21:57:03,212 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 21:57:09,667 INFO   eval_kgc [val]: 504/6068
+2026-04-03 21:57:15,933 INFO   eval_kgc [val]: 1000/6068
+2026-04-03 21:57:22,313 INFO   eval_kgc [val]: 1504/6068
+2026-04-03 21:57:28,619 INFO   eval_kgc [val]: 2000/6068
+2026-04-03 21:57:35,052 INFO   eval_kgc [val]: 2504/6068
+2026-04-03 21:57:41,396 INFO   eval_kgc [val]: 3000/6068
+2026-04-03 21:57:47,873 INFO   eval_kgc [val]: 3504/6068
+2026-04-03 21:57:54,239 INFO   eval_kgc [val]: 4000/6068
+2026-04-03 21:58:00,731 INFO   eval_kgc [val]: 4504/6068
+2026-04-03 21:58:07,110 INFO   eval_kgc [val]: 5000/6068
+2026-04-03 21:58:13,573 INFO   eval_kgc [val]: 5504/6068
+2026-04-03 21:58:20,018 INFO   eval_kgc [val]: 6000/6068
+2026-04-03 21:58:20,908 INFO   eval_kgc [val]: 6068/6068
+2026-04-03 21:58:20,909 INFO val: {'epoch': 8, 'time_epoch': 77.68614, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10235, 'mrr': 0.52317148, 'hits@1': 0.4357284, 'hits@3': 0.5797627, 'hits@10': 0.6758405}
+2026-04-03 21:58:20,917 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 21:58:27,436 INFO   eval_kgc [test]: 504/6268
+2026-04-03 21:58:33,797 INFO   eval_kgc [test]: 1000/6268
+2026-04-03 21:58:40,268 INFO   eval_kgc [test]: 1504/6268
+2026-04-03 21:58:46,623 INFO   eval_kgc [test]: 2000/6268
+2026-04-03 21:58:53,080 INFO   eval_kgc [test]: 2504/6268
+2026-04-03 21:58:59,416 INFO   eval_kgc [test]: 3000/6268
+2026-04-03 21:59:05,800 INFO   eval_kgc [test]: 3504/6268
+2026-04-03 21:59:12,125 INFO   eval_kgc [test]: 4000/6268
+2026-04-03 21:59:18,567 INFO   eval_kgc [test]: 4504/6268
+2026-04-03 21:59:24,939 INFO   eval_kgc [test]: 5000/6268
+2026-04-03 21:59:31,456 INFO   eval_kgc [test]: 5504/6268
+2026-04-03 21:59:37,969 INFO   eval_kgc [test]: 6000/6268
+2026-04-03 21:59:41,463 INFO   eval_kgc [test]: 6268/6268
+2026-04-03 21:59:41,465 INFO test: {'epoch': 8, 'time_epoch': 80.53342, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10272, 'mrr': 0.52664524, 'hits@1': 0.4412891, 'hits@3': 0.58248246, 'hits@10': 0.6743778}
+2026-04-03 21:59:41,466 INFO > Epoch 8: took 3197.6s (avg 3198.5s) | Best so far: epoch 7	train_loss: 5.2694 	val_loss: 0.0000 val_mrr: 0.5425	test_loss: 0.0000 test_mrr: 0.5471
+2026-04-03 22:50:25,012 INFO train: {'epoch': 9, 'time_epoch': 3042.84156, 'loss': 5.21628831, 'lr': 0.00079651, 'params': 212097, 'time_iter': 1.12158, 'subgraph_hits@1': 0.188122}
+2026-04-03 22:50:25,041 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 22:50:31,472 INFO   eval_kgc [val]: 504/6068
+2026-04-03 22:50:37,733 INFO   eval_kgc [val]: 1000/6068
+2026-04-03 22:50:44,120 INFO   eval_kgc [val]: 1504/6068
+2026-04-03 22:50:50,426 INFO   eval_kgc [val]: 2000/6068
+2026-04-03 22:50:56,867 INFO   eval_kgc [val]: 2504/6068
+2026-04-03 22:51:03,212 INFO   eval_kgc [val]: 3000/6068
+2026-04-03 22:51:09,688 INFO   eval_kgc [val]: 3504/6068
+2026-04-03 22:51:16,071 INFO   eval_kgc [val]: 4000/6068
+2026-04-03 22:51:22,573 INFO   eval_kgc [val]: 4504/6068
+2026-04-03 22:51:28,997 INFO   eval_kgc [val]: 5000/6068
+2026-04-03 22:51:35,498 INFO   eval_kgc [val]: 5504/6068
+2026-04-03 22:51:41,952 INFO   eval_kgc [val]: 6000/6068
+2026-04-03 22:51:42,841 INFO   eval_kgc [val]: 6068/6068
+2026-04-03 22:51:42,843 INFO val: {'epoch': 9, 'time_epoch': 77.78776, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10249, 'mrr': 0.53149629, 'hits@1': 0.45220831, 'hits@3': 0.58157545, 'hits@10': 0.67386287}
+2026-04-03 22:51:42,852 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 22:51:49,345 INFO   eval_kgc [test]: 504/6268
+2026-04-03 22:51:55,677 INFO   eval_kgc [test]: 1000/6268
+2026-04-03 22:52:02,116 INFO   eval_kgc [test]: 1504/6268
+2026-04-03 22:52:08,462 INFO   eval_kgc [test]: 2000/6268
+2026-04-03 22:52:14,892 INFO   eval_kgc [test]: 2504/6268
+2026-04-03 22:52:21,223 INFO   eval_kgc [test]: 3000/6268
+2026-04-03 22:52:27,657 INFO   eval_kgc [test]: 3504/6268
+2026-04-03 22:52:34,017 INFO   eval_kgc [test]: 4000/6268
+2026-04-03 22:52:40,489 INFO   eval_kgc [test]: 4504/6268
+2026-04-03 22:52:46,874 INFO   eval_kgc [test]: 5000/6268
+2026-04-03 22:52:53,390 INFO   eval_kgc [test]: 5504/6268
+2026-04-03 22:52:59,878 INFO   eval_kgc [test]: 6000/6268
+2026-04-03 22:53:03,355 INFO   eval_kgc [test]: 6268/6268
+2026-04-03 22:53:03,357 INFO test: {'epoch': 9, 'time_epoch': 80.49131, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10267, 'mrr': 0.53825665, 'hits@1': 0.46186981, 'hits@3': 0.58407784, 'hits@10': 0.67597318}
+2026-04-03 22:53:03,358 INFO > Epoch 9: took 3201.9s (avg 3198.8s) | Best so far: epoch 7	train_loss: 5.2694 	val_loss: 0.0000 val_mrr: 0.5425	test_loss: 0.0000 test_mrr: 0.5471
+2026-04-03 23:43:40,728 INFO train: {'epoch': 10, 'time_epoch': 3036.6613, 'loss': 5.19524055, 'lr': 0.00079454, 'params': 212097, 'time_iter': 1.1193, 'subgraph_hits@1': 0.18855971}
+2026-04-03 23:43:40,758 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 23:43:47,193 INFO   eval_kgc [val]: 504/6068
+2026-04-03 23:43:53,464 INFO   eval_kgc [val]: 1000/6068
+2026-04-03 23:43:59,853 INFO   eval_kgc [val]: 1504/6068
+2026-04-03 23:44:06,177 INFO   eval_kgc [val]: 2000/6068
+2026-04-03 23:44:12,622 INFO   eval_kgc [val]: 2504/6068
+2026-04-03 23:44:18,969 INFO   eval_kgc [val]: 3000/6068
+2026-04-03 23:44:25,445 INFO   eval_kgc [val]: 3504/6068
+2026-04-03 23:44:31,806 INFO   eval_kgc [val]: 4000/6068
+2026-04-03 23:44:38,272 INFO   eval_kgc [val]: 4504/6068
+2026-04-03 23:44:44,631 INFO   eval_kgc [val]: 5000/6068
+2026-04-03 23:44:51,101 INFO   eval_kgc [val]: 5504/6068
+2026-04-03 23:44:57,565 INFO   eval_kgc [val]: 6000/6068
+2026-04-03 23:44:58,452 INFO   eval_kgc [val]: 6068/6068
+2026-04-03 23:44:58,453 INFO val: {'epoch': 10, 'time_epoch': 77.68196, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10235, 'mrr': 0.53390235, 'hits@1': 0.4541859, 'hits@3': 0.58717865, 'hits@10': 0.6730389}
+2026-04-03 23:44:58,461 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-03 23:45:04,973 INFO   eval_kgc [test]: 504/6268
+2026-04-03 23:45:11,311 INFO   eval_kgc [test]: 1000/6268
+2026-04-03 23:45:17,713 INFO   eval_kgc [test]: 1504/6268
+2026-04-03 23:45:23,992 INFO   eval_kgc [test]: 2000/6268
+2026-04-03 23:45:30,358 INFO   eval_kgc [test]: 2504/6268
+2026-04-03 23:45:36,659 INFO   eval_kgc [test]: 3000/6268
+2026-04-03 23:45:43,107 INFO   eval_kgc [test]: 3504/6268
+2026-04-03 23:45:49,467 INFO   eval_kgc [test]: 4000/6268
+2026-04-03 23:45:55,928 INFO   eval_kgc [test]: 4504/6268
+2026-04-03 23:46:02,299 INFO   eval_kgc [test]: 5000/6268
+2026-04-03 23:46:08,802 INFO   eval_kgc [test]: 5504/6268
+2026-04-03 23:46:15,298 INFO   eval_kgc [test]: 6000/6268
+2026-04-03 23:46:18,790 INFO   eval_kgc [test]: 6268/6268
+2026-04-03 23:46:18,791 INFO test: {'epoch': 10, 'time_epoch': 80.31608, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10244, 'mrr': 0.54147035, 'hits@1': 0.46952775, 'hits@3': 0.58296108, 'hits@10': 0.67740905}
+2026-04-03 23:46:18,792 INFO > Epoch 10: took 3195.4s (avg 3198.5s) | Best so far: epoch 7	train_loss: 5.2694 	val_loss: 0.0000 val_mrr: 0.5425	test_loss: 0.0000 test_mrr: 0.5471
+2026-04-04 00:36:55,092 INFO train: {'epoch': 11, 'time_epoch': 3035.59967, 'loss': 5.1889257, 'lr': 0.00079215, 'params': 212097, 'time_iter': 1.11891, 'subgraph_hits@1': 0.18655547}
+2026-04-04 00:36:55,122 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 00:37:01,532 INFO   eval_kgc [val]: 504/6068
+2026-04-04 00:37:07,806 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 00:37:14,180 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 00:37:20,479 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 00:37:26,888 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 00:37:33,194 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 00:37:39,629 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 00:37:45,972 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 00:37:52,433 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 00:37:58,818 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 00:38:05,301 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 00:38:11,778 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 00:38:12,670 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 00:38:12,672 INFO val: {'epoch': 11, 'time_epoch': 77.53898, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10216, 'mrr': 0.54565203, 'hits@1': 0.47412658, 'hits@3': 0.58800262, 'hits@10': 0.67485166}
+2026-04-04 00:38:12,680 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 00:38:19,215 INFO   eval_kgc [test]: 504/6268
+2026-04-04 00:38:25,561 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 00:38:31,996 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 00:38:38,295 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 00:38:44,669 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 00:38:50,928 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 00:38:57,328 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 00:39:03,681 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 00:39:10,138 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 00:39:16,517 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 00:39:23,032 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 00:39:29,529 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 00:39:33,004 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 00:39:33,006 INFO test: {'epoch': 11, 'time_epoch': 80.31216, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10244, 'mrr': 0.54959273, 'hits@1': 0.48117423, 'hits@3': 0.58742821, 'hits@10': 0.67740905}
+2026-04-04 00:39:33,022 INFO > Epoch 11: took 3194.2s (avg 3198.2s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+2026-04-04 01:30:09,233 INFO train: {'epoch': 12, 'time_epoch': 3035.49175, 'loss': 5.16946047, 'lr': 0.00078933, 'params': 212097, 'time_iter': 1.11887, 'subgraph_hits@1': 0.18531147}
+2026-04-04 01:30:09,263 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 01:30:15,729 INFO   eval_kgc [val]: 504/6068
+2026-04-04 01:30:22,008 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 01:30:28,421 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 01:30:34,758 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 01:30:41,210 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 01:30:47,568 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 01:30:54,040 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 01:31:00,425 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 01:31:06,924 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 01:31:13,335 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 01:31:19,840 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 01:31:26,309 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 01:31:27,197 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 01:31:27,198 INFO val: {'epoch': 12, 'time_epoch': 77.92304, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10267, 'mrr': 0.54017979, 'hits@1': 0.46506262, 'hits@3': 0.58651942, 'hits@10': 0.67336851}
+2026-04-04 01:31:27,206 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 01:31:33,703 INFO   eval_kgc [test]: 504/6268
+2026-04-04 01:31:39,979 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 01:31:46,387 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 01:31:52,711 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 01:31:59,151 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 01:32:05,484 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 01:32:11,930 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 01:32:18,267 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 01:32:24,701 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 01:32:31,041 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 01:32:37,523 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 01:32:44,007 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 01:32:47,494 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 01:32:47,495 INFO test: {'epoch': 12, 'time_epoch': 80.27486, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10239, 'mrr': 0.54172349, 'hits@1': 0.46777281, 'hits@3': 0.58551371, 'hits@10': 0.67756861}
+2026-04-04 01:32:47,496 INFO > Epoch 12: took 3194.5s (avg 3197.9s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+2026-04-04 02:23:24,753 INFO train: {'epoch': 13, 'time_epoch': 3036.58125, 'loss': 5.16532835, 'lr': 0.00078608, 'params': 212097, 'time_iter': 1.11927, 'subgraph_hits@1': 0.18798378}
+2026-04-04 02:23:24,783 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 02:23:31,236 INFO   eval_kgc [val]: 504/6068
+2026-04-04 02:23:37,510 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 02:23:43,909 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 02:23:50,240 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 02:23:56,691 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 02:24:03,050 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 02:24:09,545 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 02:24:15,945 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 02:24:22,461 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 02:24:28,867 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 02:24:35,343 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 02:24:41,779 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 02:24:42,665 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 02:24:42,666 INFO val: {'epoch': 13, 'time_epoch': 77.86972, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.1026, 'mrr': 0.52997613, 'hits@1': 0.44676995, 'hits@3': 0.58437705, 'hits@10': 0.67682928}
+2026-04-04 02:24:42,674 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 02:24:49,160 INFO   eval_kgc [test]: 504/6268
+2026-04-04 02:24:55,472 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 02:25:01,895 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 02:25:08,211 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 02:25:14,647 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 02:25:20,993 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 02:25:27,457 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 02:25:33,832 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 02:25:40,285 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 02:25:46,596 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 02:25:53,033 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 02:25:59,470 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 02:26:02,928 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 02:26:02,929 INFO test: {'epoch': 13, 'time_epoch': 80.24137, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10235, 'mrr': 0.53094977, 'hits@1': 0.44894704, 'hits@3': 0.58152521, 'hits@10': 0.67724955}
+2026-04-04 02:26:02,930 INFO > Epoch 13: took 3195.4s (avg 3197.7s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+2026-04-04 03:16:39,355 INFO train: {'epoch': 14, 'time_epoch': 3035.77698, 'loss': 5.15634031, 'lr': 0.00078241, 'params': 212097, 'time_iter': 1.11897, 'subgraph_hits@1': 0.19242996}
+2026-04-04 03:16:39,384 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 03:16:45,863 INFO   eval_kgc [val]: 504/6068
+2026-04-04 03:16:52,159 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 03:16:58,569 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 03:17:04,911 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 03:17:11,367 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 03:17:17,729 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 03:17:24,220 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 03:17:30,617 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 03:17:37,092 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 03:17:43,471 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 03:17:49,922 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 03:17:56,376 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 03:17:57,264 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 03:17:57,266 INFO val: {'epoch': 14, 'time_epoch': 77.86751, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10259, 'mrr': 0.54253274, 'hits@1': 0.4668754, 'hits@3': 0.58981544, 'hits@10': 0.67633486}
+2026-04-04 03:17:57,274 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 03:18:03,788 INFO   eval_kgc [test]: 504/6268
+2026-04-04 03:18:10,115 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 03:18:16,569 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 03:18:22,912 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 03:18:29,310 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 03:18:35,574 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 03:18:41,963 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 03:18:48,286 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 03:18:54,734 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 03:19:01,097 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 03:19:07,607 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 03:19:14,112 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 03:19:17,598 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 03:19:17,599 INFO test: {'epoch': 14, 'time_epoch': 80.31167, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10244, 'mrr': 0.54400986, 'hits@1': 0.46904913, 'hits@3': 0.58854496, 'hits@10': 0.67677093}
+2026-04-04 03:19:17,600 INFO > Epoch 14: took 3194.7s (avg 3197.5s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+2026-04-04 04:09:57,943 INFO train: {'epoch': 15, 'time_epoch': 3039.68524, 'loss': 5.1508904, 'lr': 0.00077833, 'params': 212097, 'time_iter': 1.12041, 'subgraph_hits@1': 0.18842149}
+2026-04-04 04:09:57,973 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 04:10:04,429 INFO   eval_kgc [val]: 504/6068
+2026-04-04 04:10:10,708 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 04:10:17,110 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 04:10:23,442 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 04:10:29,884 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 04:10:36,217 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 04:10:42,672 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 04:10:49,023 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 04:10:55,494 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 04:11:01,877 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 04:11:08,372 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 04:11:14,836 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 04:11:15,725 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 04:11:15,726 INFO val: {'epoch': 15, 'time_epoch': 77.74011, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10242, 'mrr': 0.53801012, 'hits@1': 0.45715228, 'hits@3': 0.5931114, 'hits@10': 0.67913646}
+2026-04-04 04:11:15,734 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 04:11:22,244 INFO   eval_kgc [test]: 504/6268
+2026-04-04 04:11:28,527 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 04:11:34,892 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 04:11:41,185 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 04:11:47,619 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 04:11:53,913 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 04:12:00,348 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 04:12:06,703 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 04:12:13,133 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 04:12:19,480 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 04:12:25,969 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 04:12:32,468 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 04:12:35,959 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 04:12:35,960 INFO test: {'epoch': 15, 'time_epoch': 80.21172, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10231, 'mrr': 0.54550725, 'hits@1': 0.47000638, 'hits@3': 0.58934271, 'hits@10': 0.68395025}
+2026-04-04 04:12:35,961 INFO > Epoch 15: took 3198.4s (avg 3197.6s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+2026-04-04 05:03:17,325 INFO train: {'epoch': 16, 'time_epoch': 3040.70951, 'loss': 5.14536083, 'lr': 0.00077383, 'params': 212097, 'time_iter': 1.12079, 'subgraph_hits@1': 0.19570126}
+2026-04-04 05:03:17,355 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 05:03:23,795 INFO   eval_kgc [val]: 504/6068
+2026-04-04 05:03:30,078 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 05:03:36,513 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 05:03:42,849 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 05:03:49,303 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 05:03:55,647 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 05:04:02,129 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 05:04:08,516 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 05:04:15,014 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 05:04:21,409 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 05:04:27,871 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 05:04:34,314 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 05:04:35,205 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 05:04:35,206 INFO val: {'epoch': 16, 'time_epoch': 77.83775, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10255, 'mrr': 0.537287, 'hits@1': 0.45781147, 'hits@3': 0.5889914, 'hits@10': 0.68045485}
+2026-04-04 05:04:35,214 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 05:04:41,727 INFO   eval_kgc [test]: 504/6268
+2026-04-04 05:04:48,053 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 05:04:54,492 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 05:05:00,821 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 05:05:07,251 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 05:05:13,532 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 05:05:19,942 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 05:05:26,298 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 05:05:32,751 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 05:05:39,093 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 05:05:45,567 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 05:05:52,052 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 05:05:55,526 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 05:05:55,527 INFO test: {'epoch': 16, 'time_epoch': 80.29925, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10242, 'mrr': 0.54038745, 'hits@1': 0.46378431, 'hits@3': 0.58519465, 'hits@10': 0.6802808}
+2026-04-04 05:05:55,528 INFO > Epoch 16: took 3199.6s (avg 3197.7s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+2026-04-04 05:56:30,413 INFO train: {'epoch': 17, 'time_epoch': 3034.24684, 'loss': 5.12107906, 'lr': 0.00076892, 'params': 212097, 'time_iter': 1.11841, 'subgraph_hits@1': 0.19749816}
+2026-04-04 05:56:30,444 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 05:56:36,908 INFO   eval_kgc [val]: 504/6068
+2026-04-04 05:56:43,187 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 05:56:49,590 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 05:56:55,923 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 05:57:02,368 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 05:57:08,728 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 05:57:15,215 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 05:57:21,596 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 05:57:28,070 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 05:57:34,426 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 05:57:40,878 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 05:57:47,351 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 05:57:48,242 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 05:57:48,244 INFO val: {'epoch': 17, 'time_epoch': 77.78651, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10249, 'mrr': 0.52996224, 'hits@1': 0.44627553, 'hits@3': 0.58618987, 'hits@10': 0.67221493}
+2026-04-04 05:57:48,252 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 05:57:54,790 INFO   eval_kgc [test]: 504/6268
+2026-04-04 05:58:01,147 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 05:58:07,596 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 05:58:13,941 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 05:58:20,391 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 05:58:26,745 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 05:58:33,201 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 05:58:39,551 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 05:58:45,985 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 05:58:52,294 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 05:58:58,762 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 05:59:05,231 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 05:59:08,702 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 05:59:08,703 INFO test: {'epoch': 17, 'time_epoch': 80.43738, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.1026, 'mrr': 0.53463155, 'hits@1': 0.45660499, 'hits@3': 0.58343971, 'hits@10': 0.67581367}
+2026-04-04 05:59:08,704 INFO > Epoch 17: took 3193.2s (avg 3197.4s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+2026-04-04 06:49:48,507 INFO train: {'epoch': 18, 'time_epoch': 3039.15078, 'loss': 5.1045152, 'lr': 0.0007636, 'params': 212097, 'time_iter': 1.12022, 'subgraph_hits@1': 0.19784372}
+2026-04-04 06:49:48,536 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 06:49:55,009 INFO   eval_kgc [val]: 504/6068
+2026-04-04 06:50:01,312 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 06:50:07,750 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 06:50:14,094 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 06:50:20,556 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 06:50:26,928 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 06:50:33,423 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 06:50:39,813 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 06:50:46,291 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 06:50:52,667 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 06:50:59,135 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 06:51:05,596 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 06:51:06,484 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 06:51:06,486 INFO val: {'epoch': 18, 'time_epoch': 77.93597, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10268, 'mrr': 0.52899718, 'hits@1': 0.44594595, 'hits@3': 0.58388269, 'hits@10': 0.67501646}
+2026-04-04 06:51:06,494 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 06:51:13,009 INFO   eval_kgc [test]: 504/6268
+2026-04-04 06:51:19,359 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 06:51:25,805 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 06:51:32,097 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 06:51:38,450 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 06:51:44,670 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 06:51:51,074 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 06:51:57,427 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 06:52:03,885 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 06:52:10,254 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 06:52:16,748 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 06:52:23,237 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 06:52:26,722 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 06:52:26,723 INFO test: {'epoch': 18, 'time_epoch': 80.21533, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10232, 'mrr': 0.53108883, 'hits@1': 0.45118061, 'hits@3': 0.58056796, 'hits@10': 0.67613274}
+2026-04-04 06:52:26,724 INFO > Epoch 18: took 3198.0s (avg 3197.5s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+2026-04-04 07:43:05,828 INFO train: {'epoch': 19, 'time_epoch': 3038.44871, 'loss': 5.10609639, 'lr': 0.00075789, 'params': 212097, 'time_iter': 1.11996, 'subgraph_hits@1': 0.19775157}
+2026-04-04 07:43:05,857 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 07:43:12,329 INFO   eval_kgc [val]: 504/6068
+2026-04-04 07:43:18,633 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 07:43:25,032 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 07:43:31,377 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 07:43:37,830 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 07:43:44,190 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 07:43:50,681 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 07:43:57,056 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 07:44:03,549 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 07:44:09,931 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 07:44:16,393 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 07:44:22,836 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 07:44:23,727 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 07:44:23,729 INFO val: {'epoch': 19, 'time_epoch': 77.85786, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10258, 'mrr': 0.5435136, 'hits@1': 0.46704021, 'hits@3': 0.5945946, 'hits@10': 0.67814767}
+2026-04-04 07:44:23,737 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 07:44:30,248 INFO   eval_kgc [test]: 504/6268
+2026-04-04 07:44:36,584 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 07:44:43,027 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 07:44:49,371 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 07:44:55,815 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 07:45:02,152 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 07:45:08,590 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 07:45:14,911 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 07:45:21,350 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 07:45:27,697 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 07:45:34,189 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 07:45:40,677 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 07:45:44,163 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 07:45:44,164 INFO test: {'epoch': 19, 'time_epoch': 80.41311, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10257, 'mrr': 0.54834753, 'hits@1': 0.47814295, 'hits@3': 0.58854496, 'hits@10': 0.6764518}
+2026-04-04 07:45:44,165 INFO > Epoch 19: took 3197.4s (avg 3197.5s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+2026-04-04 08:36:23,965 INFO train: {'epoch': 20, 'time_epoch': 3039.15136, 'loss': 5.06311764, 'lr': 0.00075179, 'params': 212097, 'time_iter': 1.12022, 'subgraph_hits@1': 0.20457059}
+2026-04-04 08:36:23,995 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 08:36:30,444 INFO   eval_kgc [val]: 504/6068
+2026-04-04 08:36:36,711 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 08:36:43,103 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 08:36:49,429 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 08:36:55,879 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 08:37:02,230 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 08:37:08,695 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 08:37:15,057 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 08:37:21,514 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 08:37:27,892 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 08:37:34,393 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 08:37:40,880 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 08:37:41,766 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 08:37:41,768 INFO val: {'epoch': 20, 'time_epoch': 77.75921, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10245, 'mrr': 0.54295331, 'hits@1': 0.46704021, 'hits@3': 0.59129864, 'hits@10': 0.67600524}
+2026-04-04 08:37:41,776 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 08:37:48,289 INFO   eval_kgc [test]: 504/6268
+2026-04-04 08:37:54,626 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 08:38:01,056 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 08:38:07,369 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 08:38:13,806 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 08:38:20,133 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 08:38:26,587 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 08:38:32,931 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 08:38:39,393 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 08:38:45,755 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 08:38:52,268 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 08:38:58,767 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 08:39:02,245 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 08:39:02,246 INFO test: {'epoch': 20, 'time_epoch': 80.4565, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10262, 'mrr': 0.5472405, 'hits@1': 0.47463307, 'hits@3': 0.58886409, 'hits@10': 0.68044031}
+2026-04-04 08:39:02,247 INFO > Epoch 20: took 3198.1s (avg 3197.5s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+2026-04-04 09:29:39,834 INFO train: {'epoch': 21, 'time_epoch': 3036.95057, 'loss': 5.11117057, 'lr': 0.0007453, 'params': 212097, 'time_iter': 1.11941, 'subgraph_hits@1': 0.20305012}
+2026-04-04 09:29:39,864 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 09:29:46,323 INFO   eval_kgc [val]: 504/6068
+2026-04-04 09:29:52,590 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 09:29:58,983 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 09:30:05,290 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 09:30:11,735 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 09:30:18,086 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 09:30:24,568 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 09:30:30,969 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 09:30:37,481 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 09:30:43,888 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 09:30:50,376 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 09:30:56,836 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 09:30:57,724 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 09:30:57,726 INFO val: {'epoch': 21, 'time_epoch': 77.84793, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10257, 'mrr': 0.53391784, 'hits@1': 0.45237312, 'hits@3': 0.58800262, 'hits@10': 0.67633486}
+2026-04-04 09:30:57,734 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 09:31:04,246 INFO   eval_kgc [test]: 504/6268
+2026-04-04 09:31:10,588 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 09:31:17,039 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 09:31:23,384 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 09:31:29,829 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 09:31:36,165 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 09:31:42,613 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 09:31:48,968 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 09:31:55,410 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 09:32:01,751 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 09:32:08,243 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 09:32:14,739 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 09:32:18,225 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 09:32:18,226 INFO test: {'epoch': 21, 'time_epoch': 80.47843, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10265, 'mrr': 0.53526992, 'hits@1': 0.45596683, 'hits@3': 0.58407784, 'hits@10': 0.67804724}
+2026-04-04 09:32:18,227 INFO > Epoch 21: took 3196.0s (avg 3197.4s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+2026-04-04 10:22:53,944 INFO train: {'epoch': 22, 'time_epoch': 3035.08653, 'loss': 5.07565367, 'lr': 0.00073844, 'params': 212097, 'time_iter': 1.11872, 'subgraph_hits@1': 0.20394859}
+2026-04-04 10:22:53,974 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 10:23:00,408 INFO   eval_kgc [val]: 504/6068
+2026-04-04 10:23:06,671 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 10:23:13,050 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 10:23:19,345 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 10:23:25,769 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 10:23:32,108 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 10:23:38,576 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 10:23:44,956 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 10:23:51,464 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 10:23:57,871 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 10:24:04,344 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 10:24:10,788 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 10:24:11,674 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 10:24:11,675 INFO val: {'epoch': 22, 'time_epoch': 77.68826, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10236, 'mrr': 0.53830552, 'hits@1': 0.45880026, 'hits@3': 0.59129864, 'hits@10': 0.6743573}
+2026-04-04 10:24:11,683 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 10:24:18,186 INFO   eval_kgc [test]: 504/6268
+2026-04-04 10:24:24,537 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 10:24:30,997 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 10:24:37,348 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 10:24:43,791 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 10:24:50,142 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 10:24:56,606 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 10:25:02,993 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 10:25:09,488 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 10:25:15,856 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 10:25:22,331 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 10:25:28,782 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 10:25:32,248 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 10:25:32,250 INFO test: {'epoch': 22, 'time_epoch': 80.55213, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10275, 'mrr': 0.54218143, 'hits@1': 0.46745375, 'hits@3': 0.58679003, 'hits@10': 0.6762923}
+2026-04-04 10:25:32,250 INFO > Epoch 22: took 3194.0s (avg 3197.3s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+2026-04-04 11:16:10,470 INFO train: {'epoch': 23, 'time_epoch': 3037.58459, 'loss': 5.0658796, 'lr': 0.0007312, 'params': 212097, 'time_iter': 1.11964, 'subgraph_hits@1': 0.20252027}
+2026-04-04 11:16:10,499 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 11:16:16,942 INFO   eval_kgc [val]: 504/6068
+2026-04-04 11:16:23,207 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 11:16:29,592 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 11:16:35,901 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 11:16:42,346 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 11:16:48,691 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 11:16:55,170 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 11:17:01,562 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 11:17:08,071 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 11:17:14,488 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 11:17:20,994 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 11:17:27,460 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 11:17:28,345 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 11:17:28,347 INFO val: {'epoch': 23, 'time_epoch': 77.83401, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10255, 'mrr': 0.5338316, 'hits@1': 0.45237312, 'hits@3': 0.58915621, 'hits@10': 0.6745221}
+2026-04-04 11:17:28,355 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 11:17:34,860 INFO   eval_kgc [test]: 504/6268
+2026-04-04 11:17:41,190 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 11:17:47,634 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 11:17:53,970 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 11:18:00,408 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 11:18:06,708 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 11:18:13,104 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 11:18:19,424 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 11:18:25,869 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 11:18:32,239 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 11:18:38,744 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 11:18:45,241 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 11:18:48,734 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 11:18:48,735 INFO test: {'epoch': 23, 'time_epoch': 80.36638, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10251, 'mrr': 0.53495097, 'hits@1': 0.45596683, 'hits@3': 0.58280152, 'hits@10': 0.67565411}
+2026-04-04 11:18:48,736 INFO > Epoch 23: took 3196.5s (avg 3197.2s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+2026-04-04 12:09:26,248 INFO train: {'epoch': 24, 'time_epoch': 3036.89471, 'loss': 5.07074862, 'lr': 0.00072361, 'params': 212097, 'time_iter': 1.11939, 'subgraph_hits@1': 0.20613712}
+2026-04-04 12:09:26,278 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 12:09:32,742 INFO   eval_kgc [val]: 504/6068
+2026-04-04 12:09:39,026 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 12:09:45,432 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 12:09:51,779 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 12:09:58,228 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 12:10:04,571 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 12:10:11,046 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 12:10:17,413 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 12:10:23,882 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 12:10:30,266 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 12:10:36,740 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 12:10:43,201 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 12:10:44,088 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 12:10:44,089 INFO val: {'epoch': 24, 'time_epoch': 77.79789, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.1025, 'mrr': 0.52476853, 'hits@1': 0.43820038, 'hits@3': 0.58503628, 'hits@10': 0.67237967}
+2026-04-04 12:10:44,098 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 12:10:50,587 INFO   eval_kgc [test]: 504/6268
+2026-04-04 12:10:56,866 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 12:11:03,273 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 12:11:09,606 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 12:11:16,052 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 12:11:22,385 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 12:11:28,816 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 12:11:35,171 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 12:11:41,612 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 12:11:47,961 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 12:11:54,446 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 12:12:00,939 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 12:12:04,424 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 12:12:04,426 INFO test: {'epoch': 24, 'time_epoch': 80.31408, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10244, 'mrr': 0.52503109, 'hits@1': 0.44049138, 'hits@3': 0.57769626, 'hits@10': 0.67581367}
+2026-04-04 12:12:04,427 INFO > Epoch 24: took 3195.7s (avg 3197.2s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+2026-04-04 13:02:43,850 INFO train: {'epoch': 25, 'time_epoch': 3038.793, 'loss': 5.04453699, 'lr': 0.00071566, 'params': 212097, 'time_iter': 1.12009, 'subgraph_hits@1': 0.21012256}
+2026-04-04 13:02:43,880 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 13:02:50,327 INFO   eval_kgc [val]: 504/6068
+2026-04-04 13:02:56,610 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 13:03:03,006 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 13:03:09,329 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 13:03:15,768 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 13:03:22,118 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 13:03:28,599 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 13:03:34,989 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 13:03:41,485 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 13:03:47,891 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 13:03:54,374 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 13:04:00,837 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 13:04:01,726 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 13:04:01,727 INFO val: {'epoch': 25, 'time_epoch': 77.83364, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10255, 'mrr': 0.5317474, 'hits@1': 0.45039552, 'hits@3': 0.58668423, 'hits@10': 0.66908371}
+2026-04-04 13:04:01,735 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 13:04:08,242 INFO   eval_kgc [test]: 504/6268
+2026-04-04 13:04:14,590 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 13:04:21,048 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 13:04:27,417 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 13:04:33,888 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 13:04:40,239 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 13:04:46,701 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 13:04:53,075 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 13:04:59,566 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 13:05:05,968 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 13:05:12,488 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 13:05:18,992 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 13:05:22,479 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 13:05:22,481 INFO test: {'epoch': 25, 'time_epoch': 80.7316, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10297, 'mrr': 0.53100926, 'hits@1': 0.44846842, 'hits@3': 0.58503509, 'hits@10': 0.6762923}
+2026-04-04 13:05:22,482 INFO > Epoch 25: took 3198.1s (avg 3197.2s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+2026-04-04 13:56:01,747 INFO train: {'epoch': 26, 'time_epoch': 3038.63287, 'loss': 5.02057676, 'lr': 0.00070736, 'params': 212097, 'time_iter': 1.12003, 'subgraph_hits@1': 0.20300405}
+2026-04-04 13:56:01,776 INFO eval_epoch_kgc [val]: 6068 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 13:56:08,204 INFO   eval_kgc [val]: 504/6068
+2026-04-04 13:56:14,427 INFO   eval_kgc [val]: 1000/6068
+2026-04-04 13:56:20,802 INFO   eval_kgc [val]: 1504/6068
+2026-04-04 13:56:27,080 INFO   eval_kgc [val]: 2000/6068
+2026-04-04 13:56:33,489 INFO   eval_kgc [val]: 2504/6068
+2026-04-04 13:56:39,829 INFO   eval_kgc [val]: 3000/6068
+2026-04-04 13:56:46,299 INFO   eval_kgc [val]: 3504/6068
+2026-04-04 13:56:52,665 INFO   eval_kgc [val]: 4000/6068
+2026-04-04 13:56:59,129 INFO   eval_kgc [val]: 4504/6068
+2026-04-04 13:57:05,505 INFO   eval_kgc [val]: 5000/6068
+2026-04-04 13:57:11,987 INFO   eval_kgc [val]: 5504/6068
+2026-04-04 13:57:18,453 INFO   eval_kgc [val]: 6000/6068
+2026-04-04 13:57:19,343 INFO   eval_kgc [val]: 6068/6068
+2026-04-04 13:57:19,344 INFO val: {'epoch': 26, 'time_epoch': 77.55369, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.10218, 'mrr': 0.53712982, 'hits@1': 0.45748186, 'hits@3': 0.58948582, 'hits@10': 0.6758405}
+2026-04-04 13:57:19,352 INFO eval_epoch_kgc [test]: 6268 queries on full graph (40943 nodes, eval_batch_size=8)
+2026-04-04 13:57:25,883 INFO   eval_kgc [test]: 504/6268
+2026-04-04 13:57:32,233 INFO   eval_kgc [test]: 1000/6268
+2026-04-04 13:57:38,686 INFO   eval_kgc [test]: 1504/6268
+2026-04-04 13:57:45,028 INFO   eval_kgc [test]: 2000/6268
+2026-04-04 13:57:51,469 INFO   eval_kgc [test]: 2504/6268
+2026-04-04 13:57:57,786 INFO   eval_kgc [test]: 3000/6268
+2026-04-04 13:58:04,180 INFO   eval_kgc [test]: 3504/6268
+2026-04-04 13:58:10,490 INFO   eval_kgc [test]: 4000/6268
+2026-04-04 13:58:16,927 INFO   eval_kgc [test]: 4504/6268
+2026-04-04 13:58:23,271 INFO   eval_kgc [test]: 5000/6268
+2026-04-04 13:58:29,765 INFO   eval_kgc [test]: 5504/6268
+2026-04-04 13:58:36,251 INFO   eval_kgc [test]: 6000/6268
+2026-04-04 13:58:39,722 INFO   eval_kgc [test]: 6268/6268
+2026-04-04 13:58:39,724 INFO test: {'epoch': 26, 'time_epoch': 80.35732, 'loss': 0.0, 'lr': 0.0, 'params': 212097, 'time_iter': 0.1025, 'mrr': 0.54116797, 'hits@1': 0.46553925, 'hits@3': 0.58774728, 'hits@10': 0.67788768}
+2026-04-04 13:58:39,725 INFO > Epoch 26: took 3197.2s (avg 3197.2s) | Best so far: epoch 11	train_loss: 5.1889 	val_loss: 0.0000 val_mrr: 0.5457	test_loss: 0.0000 test_mrr: 0.5496
+slurmstepd-compute-gpu-3-1: error: *** JOB 566290 ON compute-gpu-3-1 CANCELLED AT 2026-04-04T13:59:11 DUE TO TIME LIMIT ***

@@ -16,7 +16,7 @@ kgc:
   subgraph_hops: 2
   max_nodes: 500
   eval_full_graph: True
-  eval_batch_size: 4         # B=16 OOMs: Ex_j=(5.57M,256)=5.7GB; B=4→1.4GB OK
+  eval_batch_size: 8         # BF16 halves memory; B=4→0.7GB so B=8 is safe on H100
   train_full_graph: True
   train_batch_size: 16
   train_steps_per_epoch: 3257    # ceil(52101 / 16) = 30% coverage, same data as B=1 30%
@@ -71,7 +71,7 @@ train:
   ckpt_period: 10
   enable_ckpt: True
   ckpt_best: True
-  grad_checkpoint: True   # per-layer activation recompute: ~20GB → ~5GB peak
+  grad_checkpoint: True   # per-layer activation recompute: saves ~25GB VRAM at cost of +33% compute
 
 model:
   type: MultiModel
@@ -81,4 +81,6 @@ metric_best: mrr
 metric_agg: argmax
 
 wandb:
-  use: False
+  use: False          # override with wandb.use True in sbatch scripts
+  entity: maxojeda
+  project: exphormer-kgc

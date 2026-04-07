@@ -1,250 +1,142 @@
-# Session Notes - Exphormer KGC (2026-03-23)
+# Session Notes — 2026-03-31
 
-## 1. Estado del experimento en curso
+## Estado actual
 
-**Job SLURM**: 555602
-**Nodo**: compute-gpu-3-1
-**Config**: B=16, train_steps_per_epoch=3257 (30% cobertura), dim=32, 6 capas
-**Output dir**: `results_b16`
-**Log**: `logs/wn18rr_b16_full.txt`
+Jobs 560280 (noexp) y 560281 (exp3) corrieron y terminaron por límite de tiempo.
+Resubmitir ambos con `sbatch <script>.sh` (auto_resume=True retoma desde el checkpoint).
 
-Estimaciones de tiempo:
-- Epoch 0: ~32 min
-- Ciclo completo (100 epocas): ~53 horas
-- Eval cada 2 epocas
+---
 
-Comandos para monitorear:
+## Cambio clave (sesión 2026-03-30, activo)
+
+**Se eliminó el `torch.sigmoid()` del V_gate en `layer/exphormer.py:71`.**
+
+```python
+# ANTES:
+gate = torch.sigmoid(batch.E_gate)   # gate ∈ (0,1) — solo suprime
+# AHORA:
+gate = batch.E_gate                  # sin restricción — puede amplificar
+```
+
+Este cambio, combinado con T=5 y 100% cobertura, produjo el salto 0.449 → 0.534+.
+
+---
+
+## Resultados acumulados — WN18RR, dim=64, T=5, 100%
+
+### Job 560281 — Con expander deg=3 ← MEJOR, PRIORIDAD 1
+
+| Época | val MRR | test MRR | test H@1 | test H@3 | test H@10 |
+|-------|---------|----------|----------|----------|-----------|
+| 0     | 0.081   | 0.081    | 0.008    | 0.105    | 0.302     |
+| 4     | 0.519   | 0.520    | 0.446    | 0.559    | 0.664     |
+| 6     | 0.532   | 0.534    | 0.462    | 0.574    | 0.669     |
+| **8** | **0.539** | **0.537** | **0.468** | **0.582** | **0.670** |
+| 9     | 0.537   | 0.534    | 0.463    | 0.578    | 0.669     |
+| 10    | 0.533   | 0.529    | 0.456    | 0.574    | 0.669     |
+
+**Best checkpoint**: época 8 (val_mrr=0.5392) → `results_d64_T5_100pct_exp3/0/ckpt.pt`
+Oscilando. Resubmitir.
+
+---
+
+### Job 560280 — Sin expander
+
+| Época | val MRR | test MRR | test H@1 | test H@3 | test H@10 |
+|-------|---------|----------|----------|----------|-----------|
+| 8     | 0.509   | 0.513    | 0.428    | 0.565    | 0.671     |
+| 12    | 0.512   | 0.518    | 0.435    | 0.572    | 0.670     |
+| 13    | 0.517   | 0.519    | 0.437    | 0.571    | 0.671     |
+| 14    | 0.516   | 0.521    | 0.437    | 0.575    | 0.671     |
+| 15    | 0.522   | 0.522    | 0.440    | 0.576    | 0.669     |
+| 16    | 0.519   | 0.522    | 0.440    | 0.577    | 0.672     |
+| **17**| **0.526** | **0.529** | **0.449** | **0.580** | **0.672** |
+| 18    | 0.523   | 0.526    | 0.445    | 0.579    | 0.671     |
+| 19    | 0.524   | 0.527    | 0.445    | 0.579    | 0.670     |
+| 20    | 0.524   | 0.524    | 0.443    | 0.577    | 0.669     |
+
+**Best checkpoint**: época 17 (val_mrr=0.5263) → `results_d64_T5_100pct_noexp/0/ckpt.pt`
+Aún mejorando lentamente (oscilando ~0.524-0.526). Resubmitir.
+
+---
+
+## Comparación con NBFNet (referencia WN18RR)
+
+| Modelo | MRR | H@1 | H@3 | H@10 |
+|--------|-----|-----|-----|------|
+| NBFNet (paper) | **0.551** | 0.497 | 0.573 | 0.666 |
+| **Nuestro exp3 ep8** | **0.537** | 0.468 | **0.582** | **0.670** |
+| Nuestro noexp ep17 | 0.529 | 0.449 | **0.580** | **0.672** |
+| exp3 ep6 (anterior) | 0.534 | 0.462 | 0.574 | 0.669 |
+
+Gap con NBFNet: **0.014 MRR** (exp3). H@3 y H@10 ya superamos.
+
+---
+
+## Conclusión sobre expander
+
+| Config | MRR (best) | Tiempo/época | Observación |
+|--------|-----------|--------------|-------------|
+| No expander | 0.529 (ep17) | ~103 min | Aún mejorando ep20+ |
+| Expander deg=3 | **0.537** (ep8) | ~193 min | Oscilando ep8-10 |
+| Expander deg=5 | ~0.49 (ep4) | ~253 min | NO resubmitir |
+
+Expander deg=3 da +0.008 MRR en épocas tempranas (~8 vs ~17). Ambos siguen mejorando.
+
+---
+
+## Próximos pasos (en orden de prioridad)
+
+### 1. Resubmitir exp3 (PRIORIDAD 1 — sigue sin platear)
 ```bash
-# Estado del job
-squeue -u mojeda_imfd | grep 555602
-
-# Ver log (binario, usar strings)
-strings logs/wn18rr_b16_full.txt | tail -50
-
-# Ver metricas si existen
-cat results_b16/0/stats_val.json | tail -5
+cd /nfs_ssd/mojeda_imfd/Doctorado/Exphormer_Max
+sbatch sbatch_d64_T5_100pct_exp3.sh
 ```
 
----
-
-## 2. Cambios implementados esta sesion
-
-### A. Expander estatico (kg_dataset.py + trainer.py)
-
-**Antes**: Se generaba un expander random en cada epoca (augmentation dinamica).
-
-**Ahora**: Se genera UNA vez en `_build_from_triples` al cargar el dataset:
-- Guardado como `kgc_ds.full_expander_edge_index` (2, E_exp)
-- WN18RR: 245,658 aristas de expander (grado 3, ~40K nodos)
-- Compartido entre train/val/test splits via `get_shared_state()`
-
-**En trainer.py**: `_tile_expander(base_exp_ei, B, N, device)` replica el expander para B copias del grafo con offsets apropiados.
-
-**Motivacion**: Exphormer original usa expander estatico (generado una vez en preprocesamiento, verificado near-Ramanujan). Esto es diferente de DropEdge (augmentation). El expander es una propiedad estructural fija del grafo.
-
-Codigo relevante (`kg_dataset.py:310-326`):
-```python
-if getattr(self.cfg.prep, 'exp', False) and num_nodes > 1:
-    tmp = Data(num_nodes=num_nodes)
-    generate_random_expander(tmp, degree=self.cfg.prep.exp_deg, ...)
-    full_expander_edge_index = tmp.expander_edges.t()  # (2, E_exp)
+### 2. Resubmitir noexp (comparación limpia)
+```bash
+sbatch sbatch_d64_T5_100pct_noexp.sh
 ```
 
-### B. ExpanderEdgeFixer (exp_edge_fixer.py)
+### 3. Experimento: T=7 con exp3
+Crear `sbatch_d64_T7_100pct_exp3.sh` con `gt.layers 7`.
+WN18RR tiene diámetro ~6; T=5 puede no capturar todos los paths.
+Estimado: ~16000s/época (~4.5h) → ~5 épocas/24h.
 
-Se anadio rama para `batch.expander_edge_index` pre-computado (modo full-graph):
+### 4. Implementar low-rank W_V[r] (mayor impacto teórico)
+Modulación multiplicativa por relación en el valor:
+`v_src = W_V(h_u) * (1 + delta_V[r_edge])`  (low-rank rank=8, ~+5K params)
+Estimado: +0.02-0.04 MRR. Requiere ~20 líneas en `layer/exphormer.py`.
 
-- **Modo full-graph**: Si batch tiene `expander_edge_index` (pre-offset global), lo usa directamente
-- **Modo subgraph**: Si tiene `expander_edges` (per-graph), usa el path antiguo con `to_data_list()`
-
-El resultado combinado (KG edges + expander) se escribe en `batch.expander_edge_index` para consumo por ExphormerAttention.
-
-### C. Habilitacion de B>1 con per-graph edge masking (trainer.py)
-
-**Antes**: `assert train_bs == 1` - solo 1 query por forward pass.
-
-**Ahora**: B queries por step, cada una con su propio grafo enmascarado.
-
-**Query-edge removal (NBFNet Appendix B)**: Para cada query (h,r,t) se remueven 4 aristas que revelarian la respuesta:
-1. `(h->t, r_orig)`: triple original
-2. `(t->h, r_orig+nr)`: reverso estructural del original
-3. `(t->h, r_orig+bnr)`: triple reciproco
-4. `(h->t, r_orig+bnr+nr)`: reverso estructural del reciproco
-
-**Implementacion vectorizada** (sin loop Python, todo en GPU):
-```python
-# Tilar B copias del full_edge_index con offsets
-graph_idx = torch.arange(B, device=device).repeat_interleave(E)  # (B*E,)
-src_tiled = full_edge_index[0].repeat(B) + graph_idx * N
-dst_tiled = full_edge_index[1].repeat(B) + graph_idx * N
-
-# Mask: check simplificado usando %bnr (los 4 IDs comparten el mismo %bnr)
-is_ht = ((src_loc == h_g) & (dst_loc == t_g)) | ((src_loc == t_g) & (dst_loc == h_g))
-keep = ~(is_ht & (rel_tiled % bnr == r_g))
-```
-
-WN18RR con B=16: 16 x 695K = 11.1M aristas KG procesadas en una operacion de masking.
-
-### D. Fix en kg_dataset.py
-
-Cambio menor: `type('_D', (), ...)()` -> `Data(num_nodes=num_nodes)` para generar el expander temporal correctamente.
+### 5. FB15k-237 cuando WN18RR esté saturado
 
 ---
 
-## 3. Diagnostico de velocidad
-
-### Experimentos corridos y sus tiempos
-
-| Config | steps/epoca | B | Cobertura | min/epoca | Notas |
-|--------|-------------|---|-----------|-----------|-------|
-| B=1, dim=32, 30% | 52,101 | 1 | 30% | ~69 | Mejor MRR hasta ahora |
-| B=1, dim=64, 30% | 52,101 | 1 | 30% | ~111 | 3.6x mas params, similar MRR |
-| B=1, dim=32, 100% | 173,670 | 1 | 100% | ~237 | Demasiado lento |
-| B=16, dim=32, 100% (loop) | 10,854 | 16 | 100% | ~108 | Loop Python = cuello de botella |
-| B=16, dim=32, 100% (vectorized) | 10,854 | 16 | 100% | ~108 | GPU compute = cuello de botella |
-| **B=16, dim=32, 30% (actual)** | **3,257** | **16** | **30%** | **~32** | **Job 555602 en curso** |
-
-### Analisis del cuello de botella
-
-Con B=16 y 100% cobertura:
-- 16 x 695K = 11.1M aristas KG + 3.93M expander = ~15M aristas por step
-- Esto es 4.5x mas computo GPU por epoca que B=1 30%
-
-**Insight clave**: El speedup de B>1 viene de menos iteraciones Python, NO de reducir el computo GPU total. El total de aristas GPU por epoca es constante: `steps x B x E` es aproximadamente igual para misma cobertura.
-
-### Conclusion
-
-B=16 con 30% cobertura es optimo actualmente:
-- Mismos datos que B=1 30% (~52K triples por epoca)
-- ~2x mas rapido por menos overhead Python
-- Mejor utilizacion GPU con tensores mas grandes
-- Vectorized masking elimina el loop Python completamente
-
----
-
-## 4. Mejores resultados historicos (WN18RR)
-
-Del experimento anterior (B=1, dim=32, 30% cobertura, job 548889):
-- **Mejor val_mrr = 0.4239** (epoch 18)
-- **Mejor test_mrr = 0.4329** (epoch 18)
-- Epoch 22: val_mrr = 0.4217 (plateau)
-
-**Baseline NBFNet**: MRR = 0.551 (objetivo a largo plazo)
-
-**Gap actual**: ~0.12 puntos de MRR por debajo de NBFNet.
-
----
-
-## 5. Arquitectura actual (wn18rr.yaml)
+## Config base actual
 
 ```yaml
-# Modelo
-gt.layer_type: Exphormer      # Exphormer-only (sin GatedGCN)
-gt.layers: 6
-gt.dim_hidden: 32
-gt.n_heads: 4                 # 8 dims per head
-gt.layer_norm: True
-gt.dropout: 0.1
-gt.use_edge_gating: True      # V gate condicionado en relacion
-gt.use_query_conditioning: True  # atencion condicionada en query relation
-
-# Expander
+gt.dim_hidden: 64
+gt.dim_edge:   64
+gnn.dim_inner: 64
+gt.layers:     5
+gt.n_heads:    4        # 16 dim/head
+use_edge_gating: True   # sin sigmoid (cambio de 2026-03-30)
+use_query_conditioning: True
 prep.exp: True
-prep.exp_deg: 3               # grado del expander
-prep.add_edge_index: True     # KG edges + expander en atencion
-
-# Training
-kgc.train_batch_size: 16
-kgc.train_steps_per_epoch: 3257   # 30% cobertura
-kgc.label_smoothing: 0.0
-
-# Optimizacion
-optim.base_lr: 0.0002
-optim.scheduler: cosine_with_warmup
-optim.num_warmup_epochs: 5
+prep.exp_deg: 3
+kgc.train_steps_per_epoch: 10854   # 100% cobertura
 optim.max_epoch: 100
-optim.clip_grad_norm: True
-
-# Eval
-train.eval_period: 2
-kgc.eval_batch_size: 4
+optim.base_lr: 0.0002
+train.eval_period: 1
+train.auto_resume: True
 ```
 
----
+## Archivos clave
 
-## 6. Pendientes / proximos pasos sugeridos
-
-### Inmediato (esta semana)
-1. Ver resultados del job 555602 (epoch 0 y primeras epocas)
-2. Si MRR comparable al historico (>0.40 en epoca 18): continuar hasta convergencia
-3. Si mas lento en convergencia: investigar si B=16 necesita ajuste de LR (gradientes mas estables con B>1 -> podria aumentar lr)
-
-### Corto plazo
-4. Implementar splits inductivos Teru et al. (2020) para WN18RR/FB15k-237 (Etapa 1 de tesis)
-5. Actualizar `fb15k237.yaml` a arquitectura actual
-
-### Ablaciones pendientes
-6. Expander on/off (`prep.exp: True/False`)
-7. Numero de virtual nodes (`num_virt_node: 0/1/4`)
-8. `add_edge_index` on/off (solo expander vs KG+expander)
-9. Numero de capas (3 vs 6 vs 9)
-
----
-
-## 7. Archivos clave modificados esta sesion
-
-| Archivo | Cambio principal |
-|---------|------------------|
-| `train/trainer.py` | `_tile_expander()` + vectorized masking B>1 + eliminar `_make_full_graph_expander` |
-| `loader/dataset/kg_dataset.py` | Expander estatico en `_build_from_triples` |
-| `encoder/exp_edge_fixer.py` | Rama para `expander_edge_index` pre-computado |
-| `configs/Exphormer/wn18rr.yaml` | train_batch_size=16, train_steps_per_epoch=3257 |
-| `sbatch_wn18rr.sh` | out_dir=results_b16, log=wn18rr_b16_full.txt |
-
----
-
-## 8. Comandos utiles
-
-```bash
-# Monitorear job
-squeue -u mojeda_imfd
-watch -n 60 'squeue -u mojeda_imfd'
-
-# Ver log del experimento
-strings logs/wn18rr_b16_full.txt | tail -100
-
-# Ver metricas de validacion
-cat results_b16/0/stats_val.json | python -m json.tool | tail -20
-
-# Cancelar job si necesario
-scancel 555602
-
-# Reanudar desde checkpoint (cambiar auto_resume si es necesario)
-sbatch sbatch_wn18rr.sh
-
-# Ver uso de GPU en el nodo
-ssh compute-gpu-3-1 nvidia-smi
-```
-
----
-
-## 9. Notas de implementacion importantes
-
-### Data leakage fix (sesion anterior)
-Durante training de query (h,r,t), la arista directa (h->t,r) estaba presente en `full_edge_index`. El modelo aprendia un shortcut trivial de 1-hop.
-
-**Fix (NBFNet Appendix B)**: per-step, remover 4 aristas que involucran (h,t).
-
-### Filter bug fix (sesion anterior)
-Para queries reciprocas `(t_orig, r_inv, h_orig)`, `tail_filter[(t_orig, r_inv)]` solo enmascaraba tails conocidos de training. Val/test-known heads NO estaban enmascarados.
-
-**Fix**: Cuando `r >= base_num_rel`, usar `head_filter[(h, r - base_num_rel)]` en lugar de tail_filter.
-
-### Restricciones de memoria
-- `gnn.dim_inner` debe ser igual a `gt.dim_hidden` (assertion en MultiModel)
-- `kgc.eval_batch_size: 4` usa ~1.4GB GPU (B=16 causa OOM en eval)
-- `grad_checkpoint: True` reduce memoria de ~20GB a ~5GB peak
-
----
-
-*Documento generado: 2026-03-23*
+| Archivo | Descripción |
+|---------|-------------|
+| `layer/exphormer.py:71` | Sigmoid removido (cambio principal) |
+| `sbatch_d64_T5_100pct_exp3.sh` | Resubmitir este primero |
+| `sbatch_d64_T5_100pct_noexp.sh` | Resubmitir segundo |
+| `results_d64_T5_100pct_exp3/0/ckpt.pt` | Mejor checkpoint (MRR=0.537, ep8) |
+| `results_d64_T5_100pct_noexp/0/ckpt.pt` | Mejor noexp checkpoint (MRR=0.529, ep17) |

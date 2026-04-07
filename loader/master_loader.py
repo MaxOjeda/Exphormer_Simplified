@@ -268,14 +268,21 @@ def create_loaders(cfg, dataset):
     # worker retains its _subgraph_cache, making warm epochs ~100× faster when
     # combined with prep.exp_check_spectral=False.
     if isinstance(dataset, KGCSplitWrapper):
-        nw = 4
+        # In full-graph mode, the DataLoaders are never iterated (training and
+        # evaluation bypass them entirely). Use num_workers=0 to avoid spawning
+        # 4 idle worker processes that load the subgraph cache into RAM.
+        from config import cfg as _cfg
+        full_graph = (getattr(_cfg.kgc, 'train_full_graph', False) and
+                      getattr(_cfg.kgc, 'eval_full_graph', False))
+        nw = 0 if full_graph else 4
+        pw = not full_graph  # persistent_workers requires num_workers > 0
         return [
             DataLoader(dataset.train_ds, batch_size=bs, shuffle=True,
-                       num_workers=nw, persistent_workers=True),
+                       num_workers=nw, persistent_workers=pw),
             DataLoader(dataset.val_ds,   batch_size=bs, shuffle=False,
-                       num_workers=nw, persistent_workers=True),
+                       num_workers=nw, persistent_workers=pw),
             DataLoader(dataset.test_ds,  batch_size=bs, shuffle=False,
-                       num_workers=nw, persistent_workers=True),
+                       num_workers=nw, persistent_workers=pw),
         ]
 
     if name in ('ogbn-arxiv', 'ogbn-proteins'):

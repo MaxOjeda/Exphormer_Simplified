@@ -18,6 +18,8 @@ import sys
 
 import numpy as np
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 # ---------------------------------------------------------------------------
 # Allow imports relative to Exphormer_Max root regardless of CWD
@@ -283,22 +285,51 @@ def agg_runs(out_dir, metric_best, metric_agg, round_n):
 if __name__ == '__main__':
     args = parse_args()
 
+    # ---------------------------------------------------------------------------
+    # Multi-GPU DDP setup
+    # ---------------------------------------------------------------------------
+    LOCAL_RANK = int(os.environ.get('LOCAL_RANK', -1))
+    is_distributed = (LOCAL_RANK >= 0)
+    if is_distributed:
+        dist.init_process_group(
+            backend='nccl',
+            timeout=datetime.timedelta(hours=2),  # default 10min kills long eval
+        )
+        torch.cuda.set_device(LOCAL_RANK)
+    rank = dist.get_rank() if is_distributed else 0
+    is_main = (rank == 0)
+
     # Load config
     load_cfg(args.cfg_file, args.opts)
     set_out_dir(args.cfg_file, cfg.name_tag)
-    os.makedirs(cfg.out_dir, exist_ok=True)
-
-    # Dump config once (to out_dir)
-    cfg_dump_path = os.path.join(cfg.out_dir, 'config.yaml')
-    with open(cfg_dump_path, 'w') as f:
-        f.write(cfg.dump())
+    if is_main:
+        os.makedirs(cfg.out_dir, exist_ok=True)
+        # Dump config once (to out_dir)
+        cfg_dump_path = os.path.join(cfg.out_dir, 'config.yaml')
+        with open(cfg_dump_path, 'w') as f:
+            f.write(cfg.dump())
+    if is_distributed:
+        dist.barrier()   # ensure rank 0 has created out_dir before others proceed
 
     torch.set_num_threads(cfg.num_threads)
 
     # Multi-seed / multi-split loop
     for run_id, seed, split_index in zip(*run_loop_settings(args)):
-        set_run_dir(run_id)
-        setup_logging(cfg.run_dir)
+        if is_main:
+            set_run_dir(run_id)
+        else:
+            # Non-main ranks just update cfg.run_dir without touching the filesystem
+            run_dir = os.path.join(cfg.out_dir, str(run_id))
+            cfg.defrost()
+            cfg.run_dir = run_dir
+            cfg.freeze()
+        if is_distributed:
+            dist.barrier()  # ensure rank 0 has created run_dir before others
+
+        if is_main:
+            setup_logging(cfg.run_dir)
+        else:
+            logging.basicConfig(level=logging.WARNING, force=True)
 
         cfg.defrost()
         cfg.dataset.split_index = split_index
@@ -306,8 +337,14 @@ if __name__ == '__main__':
         cfg.run_id = run_id
         cfg.freeze()
 
-        seed_everything(seed)
+        # Each rank uses a different seed so training draws different random batches
+        seed_everything(seed + rank)
         auto_select_device()
+        # DDP: override device to the local GPU assigned to this rank
+        if is_distributed:
+            cfg.defrost()
+            cfg.device = f'cuda:{LOCAL_RANK}'
+            cfg.freeze()
 
         logging.info(f'[*] Run ID {run_id}: seed={seed}, '
                      f'split_index={split_index}')
@@ -339,6 +376,9 @@ if __name__ == '__main__':
         # ---- Model ----
         model = create_model(cfg, dim_in, dim_out)
         model.to(torch.device(cfg.device))
+        if is_distributed:
+            model = DDP(model, device_ids=[LOCAL_RANK], find_unused_parameters=True)
+            logging.info(f'DDP enabled on {dist.get_world_size()} GPUs.')
 
         # ---- Optimizer / scheduler ----
         optimizer = build_optimizer(model.parameters(), cfg)
@@ -357,17 +397,21 @@ if __name__ == '__main__':
         custom_train(loggers, loaders, model, optimizer, scheduler, cfg,
                      dataset=dataset)
 
-    # ---- Aggregate results across seeds ----
-    try:
-        agg_runs(cfg.out_dir,
-                 metric_best=cfg.metric_best,
-                 metric_agg=cfg.metric_agg,
-                 round_n=cfg.round)
-    except Exception as e:
-        logging.info(f'Failed to aggregate runs: {e}')
+    if is_main:
+        # ---- Aggregate results across seeds ----
+        try:
+            agg_runs(cfg.out_dir,
+                     metric_best=cfg.metric_best,
+                     metric_agg=cfg.metric_agg,
+                     round_n=cfg.round)
+        except Exception as e:
+            logging.info(f'Failed to aggregate runs: {e}')
 
-    # ---- Mark done ----
-    if args.mark_done:
-        os.rename(args.cfg_file, f'{args.cfg_file}_done')
+        # ---- Mark done ----
+        if args.mark_done:
+            os.rename(args.cfg_file, f'{args.cfg_file}_done')
+
+    if is_distributed:
+        dist.destroy_process_group()
 
     logging.info(f'[*] All done: {datetime.datetime.now()}')

@@ -712,10 +712,16 @@ def create_kg_datasets(root: str, cfg) -> tuple:
     val_ds  = KGCDataset(root=root, split='val',  cfg=cfg, _shared=shared)
     test_ds = KGCDataset(root=root, split='test', cfg=cfg, _shared=shared)
 
-    # Precompute and persist subgraph caches in the main process, before DataLoader
-    # workers are forked.  Workers inherit the full _subgraph_cache via copy-on-write
-    # and never need to run k_hop_subgraph.
-    for ds in (train_ds, val_ds, test_ds):
-        ds.ensure_disk_cache()
+    # Skip subgraph cache when full-graph mode is active for both train and eval.
+    # In full-graph mode, __getitem__ is never called so subgraphs are never used.
+    # Building the cache wastes startup time and loads hundreds of MB into RAM.
+    if not (getattr(cfg.kgc, 'train_full_graph', False) and
+            getattr(cfg.kgc, 'eval_full_graph', False)):
+        for ds in (train_ds, val_ds, test_ds):
+            ds.ensure_disk_cache()
+    else:
+        logging.info(
+            'Skipping subgraph cache (full-graph train+eval mode active).'
+        )
 
     return train_ds, val_ds, test_ds

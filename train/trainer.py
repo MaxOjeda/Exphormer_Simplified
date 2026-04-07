@@ -8,6 +8,7 @@ import time
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch_geometric.data import Data
 
@@ -46,7 +47,7 @@ def _save_ckpt(model, optimizer, scheduler, epoch, run_dir):
     ckpt_path = os.path.join(run_dir, 'ckpt.pt')
     torch.save({
         'epoch': epoch,
-        'model_state_dict': model.state_dict(),
+        'model_state_dict': _unwrap_model(model).state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
     }, ckpt_path)
@@ -57,12 +58,20 @@ def _load_ckpt(model, optimizer, scheduler, run_dir, epoch_resume=-1):
     if not os.path.exists(ckpt_path):
         return 0
     ckpt = torch.load(ckpt_path, map_location='cpu')
-    model.load_state_dict(ckpt['model_state_dict'])
+    _unwrap_model(model).load_state_dict(ckpt['model_state_dict'])
     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
     scheduler.load_state_dict(ckpt['scheduler_state_dict'])
     start_epoch = ckpt['epoch'] + 1
     logging.info(f'Resumed from checkpoint at epoch {ckpt["epoch"]}')
     return start_epoch
+
+
+def _unwrap_model(model):
+    """Strip DDP and torch.compile wrappers to get the base nn.Module."""
+    m = model
+    if hasattr(m, 'module'):   # DistributedDataParallel
+        m = m.module
+    return m
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +382,7 @@ def eval_epoch_kgc(logger, loader, model, split, cfg, dataset):
 # Full-graph KGC training (NBFNet-style)
 # ---------------------------------------------------------------------------
 
-def train_epoch_kgc_full(logger, model, optimizer, scheduler, cfg, dataset):
+def train_epoch_kgc_full(logger, model, optimizer, scheduler, cfg, dataset, cur_epoch=0):
     """
     NBFNet-style full-graph training epoch for KGC.
 
@@ -414,13 +423,28 @@ def train_epoch_kgc_full(logger, model, optimizer, scheduler, cfg, dataset):
 
     train_bs    = cfg.kgc.train_batch_size         # queries per forward pass
     steps       = cfg.kgc.train_steps_per_epoch    # total steps this epoch
+    # DDP: each rank processes 1/world_size of the steps
+    if dist.is_initialized():
+        steps = max(1, steps // dist.get_world_size())
     batch_accum = cfg.optim.batch_accumulation
     max_iter    = cfg.train.max_iter               # 0 = no limit
 
-    # Random draw of (steps * train_bs) triples, cycling over the training set.
-    needed  = steps * train_bs
-    reps    = (needed + n_train - 1) // n_train
-    indices = torch.randperm(n_train).repeat(reps)[:needed]  # (needed,)
+    # Coordinated shuffle: all ranks use the same permutation (seeded by epoch)
+    # then each rank takes its non-overlapping slice → 100% coverage, no duplicates.
+    needed = steps * train_bs
+    g = torch.Generator()
+    g.manual_seed(cur_epoch)
+    if dist.is_initialized():
+        world_size = dist.get_world_size()
+        rank       = dist.get_rank()
+        # Full permutation covers world_size * needed triples (≈ 100% of dataset)
+        total_needed = world_size * needed
+        reps    = (total_needed + n_train - 1) // n_train
+        full_perm = torch.randperm(n_train, generator=g).repeat(reps)[:total_needed]
+        indices = full_perm[rank * needed: (rank + 1) * needed]
+    else:
+        reps    = (needed + n_train - 1) // n_train
+        indices = torch.randperm(n_train, generator=g).repeat(reps)[:needed]
 
     # Static expander (generated once at dataset build time); tiled per step for B copies.
     # cfg.prep.exp=False → full_expander_edge_index is None → no expander edges.
@@ -498,7 +522,6 @@ def train_epoch_kgc_full(logger, model, optimizer, scheduler, cfg, dataset):
             data.expander_edge_index = _tile_expander(_base_exp_ei, B, N, device)
 
         pred, _ = model(data)   # (B, N)
-
         loss, pred_score = kgc_full_graph_ce(
             pred, chunk_t.to(device), filter_dict, chunk_h, chunk_r,
             label_smoothing=getattr(cfg.kgc, 'label_smoothing', 0.0),
@@ -541,6 +564,10 @@ def custom_train(loggers, loaders, model, optimizer, scheduler, cfg, dataset=Non
         optimizer, scheduler: PyTorch optimizer/scheduler
         cfg:     YACS CfgNode
     """
+    is_dist = dist.is_initialized()
+    rank    = dist.get_rank() if is_dist else 0
+    is_main = (rank == 0)
+
     start_epoch = 0
     if cfg.train.auto_resume:
         start_epoch = _load_ckpt(model, optimizer, scheduler,
@@ -582,49 +609,63 @@ def custom_train(loggers, loaders, model, optimizer, scheduler, cfg, dataset=Non
     for cur_epoch in range(start_epoch, max_epoch):
         t0 = time.perf_counter()
 
-        # --- Train ---
+        # --- Train (ALL ranks) ---
         if use_full_graph_train:
             train_epoch_kgc_full(loggers[0], model, optimizer, scheduler,
-                                 cfg, dataset)
+                                 cfg, dataset, cur_epoch=cur_epoch)
         else:
             train_epoch(loggers[0], loaders[0], model, optimizer, scheduler, cfg)
-        perf[0].append(loggers[0].write_epoch(cur_epoch))
-
-        # --- Val / Test (on eval epochs) ---
-        if _is_eval_epoch(cur_epoch, eval_period, max_epoch):
-            for i in range(1, num_splits):
-                split_name = split_names[i - 1]
-                if use_full_graph_eval:
-                    eval_epoch_kgc(loggers[i], loaders[i], model,
-                                   split_name, cfg, dataset)
-                else:
-                    eval_epoch(loggers[i], loaders[i], model,
-                               split=split_name, cfg=cfg)
-                perf[i].append(loggers[i].write_epoch(cur_epoch))
+        if is_main:
+            perf[0].append(loggers[0].write_epoch(cur_epoch))
         else:
-            for i in range(1, num_splits):
-                perf[i].append(perf[i][-1] if perf[i] else {})
+            loggers[0].reset()   # avoid accumulating (B,N) pred tensors across epochs
 
-        # --- Scheduler step ---
-        val_perf = perf[1]
+        if is_dist:
+            dist.barrier()
+
+        # --- Val / Test (rank 0 only) ---
+        if _is_eval_epoch(cur_epoch, eval_period, max_epoch):
+            if is_main:
+                for i in range(1, num_splits):
+                    split_name = split_names[i - 1]
+                    if use_full_graph_eval:
+                        eval_epoch_kgc(loggers[i], loaders[i], model,
+                                       split_name, cfg, dataset)
+                    else:
+                        eval_epoch(loggers[i], loaders[i], model,
+                                   split=split_name, cfg=cfg)
+                    perf[i].append(loggers[i].write_epoch(cur_epoch))
+        else:
+            if is_main:
+                for i in range(1, num_splits):
+                    perf[i].append(perf[i][-1] if perf[i] else {})
+
+        # --- Scheduler step (ALL ranks must step together) ---
         if cfg.optim.scheduler == 'reduce_on_plateau':
-            scheduler.step(val_perf[-1].get('loss', 0))
+            _sched_val = (perf[1][-1].get('loss', 0) if (is_main and perf[1])
+                          else 0.0)
+            scheduler.step(_sched_val)
         else:
             scheduler.step()
 
+        if is_dist:
+            dist.barrier()
+
         full_epoch_times.append(time.perf_counter() - t0)
 
-        # --- Regular checkpoint ---
-        if cfg.train.enable_ckpt and not cfg.train.ckpt_best and \
-                _is_ckpt_epoch(cur_epoch, cfg.train.ckpt_period):
-            _save_ckpt(model, optimizer, scheduler, cur_epoch, cfg.run_dir)
+        if is_main:
+            # --- Regular checkpoint ---
+            if cfg.train.enable_ckpt and not cfg.train.ckpt_best and \
+                    _is_ckpt_epoch(cur_epoch, cfg.train.ckpt_period):
+                _save_ckpt(model, optimizer, scheduler, cur_epoch, cfg.run_dir)
 
-        # --- WandB log ---
-        if wandb_run is not None:
-            wandb_run.log(_flatten_dict(perf), step=cur_epoch)
+            # --- WandB log ---
+            if wandb_run is not None:
+                wandb_run.log(_flatten_dict(perf), step=cur_epoch)
 
-        # --- Best-epoch summary (on eval epochs) ---
-        if _is_eval_epoch(cur_epoch, eval_period, max_epoch) and val_perf:
+        val_perf = perf[1] if is_main else []
+        # --- Best-epoch summary (on eval epochs, rank 0 only) ---
+        if is_main and _is_eval_epoch(cur_epoch, eval_period, max_epoch) and val_perf:
             best_epoch = int(np.array([vp.get('loss', 0)
                                        for vp in val_perf]).argmin())
             best_train = best_val = best_test = ''

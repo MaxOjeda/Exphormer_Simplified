@@ -67,6 +67,14 @@ cfg.gt.batch_norm = True
 cfg.gt.dim_edge = None             # None → will be set equal to dim_hidden
 cfg.gt.use_edge_gating = False          # relation-conditioned V gate in Exphormer attention
 cfg.gt.use_query_conditioning = False   # condition attention on query relation (KGC)
+cfg.gt.gate_rel_mult = False           # multiplicative gate: V_gate(r_e)*(1+proj_vg(rel[q])) vs additive
+cfg.gt.use_alpha_mix_qk = False        # learnable α-blend for Q/K: α*x0 + (1-α)*h per layer
+cfg.gt.tie_rel_emb = False             # tie KGCNodeEncoder.rel_emb weights with KGCHead.rel_emb
+cfg.gt.inductive_routing = False       # K_h = proj_k(shared_rel[r_q]) only — no W_K(h) — inductive routing
+cfg.gt.use_nbf_v = False               # DistMult-style V: msg = h_i ⊙ W_r (NBFNet-style, replaces W_V + V_gate)
+cfg.gt.use_vrmpnn = False              # V-RMPNN: KnowFormer-style anchor-conditioned NBFNet value stream
+cfg.gt.vrmpnn_layers = 2              # number of propagation layers in V-RMPNN
+cfg.gt.use_pna = False                 # PNA aggregation: concat(sum, mean, max) + proj (NBFNet §4)
 cfg.gt.pna_degrees = []
 cfg.gt.bigbird = CN()              # kept for compat but not used
 cfg.gt.bigbird.attention_type = 'block_sparse'
@@ -195,6 +203,7 @@ cfg.train.ckpt_best = False
 cfg.train.ckpt_clean = True
 cfg.train.max_iter = 0          # 0 = no limit; set >0 to stop after N batches (debug)
 cfg.train.grad_checkpoint = False  # True: per-layer gradient checkpointing (saves memory)
+cfg.train.ckpt_monitor_split = 'val'  # 'val' or 'test' — split used for ckpt_best selection
 
 # ---------------------------------------------------------------------------
 # WandB
@@ -218,6 +227,7 @@ cfg.kgc.train_full_graph      = False  # True: NBFNet-style full-graph training
 cfg.kgc.train_batch_size      = 4      # queries per forward pass during full-graph training
 cfg.kgc.train_steps_per_epoch = 200    # gradient steps per epoch (mini-epoch strategy)
 cfg.kgc.label_smoothing       = 0.0   # label smoothing for CE loss (0 = no smoothing)
+cfg.kgc.mlp_scorer            = False  # KnowFormer-style: MLP(cat(h,r)) scorer vs Linear(cat(h,r))
 
 # ---------------------------------------------------------------------------
 # Shared / internal (used by LapPE encoder for dim_in)

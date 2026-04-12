@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch_geometric.nn as pygnn
 from torch_geometric.data import Batch
+from torch_scatter import scatter
 
 from layer.exphormer import ExphormerAttention
 from layer.gatedgcn import GatedGCNLayer
@@ -46,11 +47,18 @@ class FeatureEncoder(nn.Module):
                 self.edge_encoder_bn = nn.BatchNorm1d(cfg.gt.dim_edge)
 
         if 'Exphormer' in cfg.gt.layer_type:
+            # ExpanderEdgeFixer needs num_relations when use_nbf_v=True so it can
+            # build batch.edge_rel_idx (KG rel indices + sentinel for expander edges).
+            _use_nbf_v  = getattr(cfg.gt, 'use_nbf_v',  False)
+            _use_vrmpnn = getattr(cfg.gt, 'use_vrmpnn', False)
+            # edge_rel_idx needed by both use_nbf_v and use_vrmpnn
+            _exp_num_rel = cfg.dataset.num_relations if (_use_nbf_v or _use_vrmpnn) else None
             self.exp_edge_fixer = ExpanderEdgeFixer(
                 add_edge_index=cfg.prep.add_edge_index,
                 num_virt_node=cfg.prep.num_virt_node,
                 dim_edge=cfg.gt.dim_edge,
-                dim_hidden=cfg.gt.dim_hidden)
+                dim_hidden=cfg.gt.dim_hidden,
+                num_relations=_exp_num_rel)
 
     def forward(self, batch):
         if hasattr(self, 'node_encoder'):
@@ -157,7 +165,8 @@ class GlobalModel(nn.Module):
     def __init__(self, dim_h, num_heads, dropout=0.0, attn_dropout=0.0,
                  layer_norm=False, batch_norm=True, exp_edges_cfg=None,
                  use_edge_gating=False, use_query_conditioning=False,
-                 num_relations=None):
+                 num_relations=None, gate_rel_mult=False, use_alpha_mix_qk=False,
+                 inductive_routing=False, use_nbf_v=False, use_pna=False):
         super().__init__()
         self.dim_h = dim_h
         self.layer_norm = layer_norm
@@ -169,7 +178,12 @@ class GlobalModel(nn.Module):
                                             use_virt_nodes=use_virt,
                                             use_edge_gating=use_edge_gating,
                                             use_query_conditioning=use_query_conditioning,
-                                            num_relations=num_relations)
+                                            num_relations=num_relations,
+                                            gate_rel_mult=gate_rel_mult,
+                                            use_alpha_mix_qk=use_alpha_mix_qk,
+                                            inductive_routing=inductive_routing,
+                                            use_nbf_v=use_nbf_v,
+                                            use_pna=use_pna)
 
         if layer_norm and batch_norm:
             raise ValueError("Cannot use both layer_norm and batch_norm.")
@@ -208,7 +222,8 @@ class MultiLayer(nn.Module):
                  equivstable_pe=False, dropout=0.0, attn_dropout=0.0,
                  layer_norm=False, batch_norm=True, exp_edges_cfg=None,
                  use_edge_gating=False, use_query_conditioning=False,
-                 num_relations=None):
+                 num_relations=None, gate_rel_mult=False, use_alpha_mix_qk=False,
+                 inductive_routing=False, use_nbf_v=False, use_pna=False):
         super().__init__()
         self.dim_h = dim_h
         self.layer_norm = layer_norm
@@ -239,7 +254,12 @@ class MultiLayer(nn.Module):
                     exp_edges_cfg=exp_edges_cfg,
                     use_edge_gating=use_edge_gating,
                     use_query_conditioning=use_query_conditioning,
-                    num_relations=num_relations))
+                    num_relations=num_relations,
+                    gate_rel_mult=gate_rel_mult,
+                    use_alpha_mix_qk=use_alpha_mix_qk,
+                    inductive_routing=inductive_routing,
+                    use_nbf_v=use_nbf_v,
+                    use_pna=use_pna))
             elif layer_type in ('CustomGatedGCN', 'GCN', 'GINE', 'GAT'):
                 models.append(LocalModel(
                     dim_h=dim_h, local_gnn_type=layer_type,
@@ -294,6 +314,116 @@ class MultiLayer(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# V-RMPNN: KnowFormer-style anchor-conditioned value stream
+# ---------------------------------------------------------------------------
+
+class VRMPNN(nn.Module):
+    """
+    Value-RMPNN (Liu et al., KnowFormer, ICML 2024) — with query conditioning.
+
+    Runs NBFNet-style propagation to produce per-node value representations
+    conditioned on (anchor h, query relation rq). Output replaces W_V(h) in
+    Exphormer attention, providing inductively-generalizable path information.
+
+    Architecture (L layers):
+        z^(0)_u = init_proj([x_u || I_{u=h}])       ← anchor labeling (boundary condition)
+        For l in 0..L-1:
+            r̂     = rel_emb[r_{vu}] * (1 + proj_qcond(query_emb[r_q]))
+                                                      ← KnowFormer-style: edge rel × query rel
+            m_{u←v} = z^(l)_v ⊙ r̂                   ← query-conditioned DistMult message
+            agg_u   = Σ_{(v,r,u)∈E_KG} m_{u←v}       ← sum aggregation (NBFNet-style)
+            z^(l+1) = LayerNorm(β_l · z^(l) + update_l(agg_u))
+        return z^(L)    shape (N, dim)
+
+    Only KG edges are used (expander edges with sentinel index are skipped).
+    Query conditioning: edge relation vector is modulated by the query relation
+    embedding, approximating KnowFormer's bilinear W^r(r_q) interaction.
+    """
+
+    def __init__(self, dim: int, num_relations: int, num_layers: int = 2):
+        super().__init__()
+        self.dim = dim
+        self.num_relations = num_relations
+        self.num_layers = num_layers
+
+        # [x_u (dim) || I_{u=h} (1)] → dim
+        self.init_proj = nn.Linear(dim + 1, dim, bias=True)
+
+        # Edge relation DistMult embeddings; index num_relations = expander sentinel
+        self.rel_emb = nn.Embedding(num_relations + 1, dim)
+        nn.init.xavier_uniform_(self.rel_emb.weight)
+        nn.init.zeros_(self.rel_emb.weight[-1:])   # sentinel near-zero
+
+        # Query relation embedding table (separate from edge rel; shared across layers)
+        self.query_rel_emb = nn.Embedding(num_relations, dim)
+        nn.init.xavier_uniform_(self.query_rel_emb.weight)
+        # Query conditioning projection: maps query emb → multiplicative modulator
+        # Near-zero init: starts as pure DistMult, gradually learns query conditioning
+        self.proj_qcond = nn.Linear(dim, dim, bias=False)
+        nn.init.normal_(self.proj_qcond.weight, std=0.01)
+
+        # Per-layer: update linear, LayerNorm, learnable skip scalar β
+        self.update = nn.ModuleList([nn.Linear(dim, dim) for _ in range(num_layers)])
+        self.norms  = nn.ModuleList([nn.LayerNorm(dim)   for _ in range(num_layers)])
+        self.beta   = nn.ParameterList(
+            [nn.Parameter(torch.ones(1)) for _ in range(num_layers)]
+        )
+
+    def forward(self, batch):
+        """
+        Reads from batch:
+            batch.x               (N, dim) — node features after encoder
+            batch.anchor_idx      (B,)     — global anchor node indices
+            batch.expander_edge_index (2, E) — combined KG+expander edges
+            batch.edge_rel_idx    (E,)     — relation index per edge (sentinel for expander)
+            batch.query_relation  (B,)     — query relation index per graph (optional)
+            batch.batch           (N,)     — graph assignment per node
+        Returns z (N, dim) — stored as batch.V_stream by the caller.
+        """
+        x           = batch.x
+        N           = x.shape[0]
+        anchor_idx  = batch.anchor_idx          # (B,)
+        edge_index  = batch.expander_edge_index  # (2, E)
+        rel_idx     = batch.edge_rel_idx         # (E,)
+
+        # Anchor indicator: 1.0 at anchor node, 0.0 elsewhere
+        indicator = torch.zeros(N, 1, device=x.device, dtype=x.dtype)
+        indicator[anchor_idx.long()] = 1.0
+
+        # Initial representation — anchor-labeled boundary condition
+        z = self.init_proj(torch.cat([x, indicator], dim=-1))  # (N, dim)
+
+        # Filter out expander edges (sentinel index = num_relations)
+        kg_mask = rel_idx < self.num_relations
+        src = edge_index[0, kg_mask].long()   # (E_kg,)
+        dst = edge_index[1, kg_mask].long()   # (E_kg,)
+        r   = rel_idx[kg_mask].long()         # (E_kg,)
+
+        # Query-conditioned edge relation modulator (KnowFormer-style bilinear approx)
+        # m = z_src ⊙ (rel_emb[r_edge] * (1 + proj_qcond(query_emb[r_q])))
+        q_mod = None
+        if hasattr(batch, 'query_relation'):
+            # Map each src edge to its graph's query relation
+            num_node = batch.batch.shape[0]
+            src_clamped = src.clamp(max=num_node - 1)
+            edge_graph = batch.batch[src_clamped]              # (E_kg,) graph idx per edge
+            q_idx = batch.query_relation[edge_graph].long()    # (E_kg,) query rel per edge
+            q_emb = self.query_rel_emb(q_idx)                  # (E_kg, dim)
+            q_mod = self.proj_qcond(q_emb)                     # (E_kg, dim) — near-zero at init
+
+        for l in range(self.num_layers):
+            rel_vec = self.rel_emb(r)                          # (E_kg, dim)
+            if q_mod is not None:
+                rel_vec = rel_vec * (1.0 + q_mod)             # query-conditioned DistMult
+            msg     = z[src] * rel_vec                         # (E_kg, dim)
+            agg     = torch.zeros_like(z)
+            scatter(msg, dst, dim=0, out=agg, reduce='add')    # sum aggregation
+            z = self.norms[l](self.beta[l] * z + self.update[l](agg))
+
+        return z   # (N, dim)
+
+
+# ---------------------------------------------------------------------------
 # Top-level MultiModel
 # ---------------------------------------------------------------------------
 
@@ -321,9 +451,17 @@ class MultiModel(nn.Module):
             (f"Model dim_in after encoder ({dim_in}) must equal gt.dim_hidden "
              f"({cfg.gt.dim_hidden}). Check node encoder output dim or layers_pre_mp.")
 
-        model_types = cfg.gt.layer_type.split('+')
-        use_query_cond = getattr(cfg.gt, 'use_query_conditioning', False)
-        num_relations  = cfg.dataset.num_relations if use_query_cond else None
+        model_types        = cfg.gt.layer_type.split('+')
+        use_query_cond     = getattr(cfg.gt, 'use_query_conditioning', False)
+        gate_rel_mult      = getattr(cfg.gt, 'gate_rel_mult', False)
+        use_alpha_mix_qk   = getattr(cfg.gt, 'use_alpha_mix_qk', False)
+        inductive_routing  = getattr(cfg.gt, 'inductive_routing', False)
+        use_nbf_v          = getattr(cfg.gt, 'use_nbf_v', False)
+        use_vrmpnn         = getattr(cfg.gt, 'use_vrmpnn', False)
+        vrmpnn_layers      = getattr(cfg.gt, 'vrmpnn_layers', 2)
+        use_pna            = getattr(cfg.gt, 'use_pna', False)
+        # num_relations needed for query conditioning, nbf_v, or vrmpnn
+        num_relations      = cfg.dataset.num_relations if (use_query_cond or use_nbf_v or use_vrmpnn) else None
         self.layers = nn.Sequential(*[
             MultiLayer(
                 dim_h=cfg.gt.dim_hidden,
@@ -337,11 +475,34 @@ class MultiModel(nn.Module):
                 exp_edges_cfg=cfg.prep,
                 use_edge_gating=cfg.gt.use_edge_gating,
                 use_query_conditioning=use_query_cond,
-                num_relations=num_relations)
+                num_relations=num_relations,
+                gate_rel_mult=gate_rel_mult,
+                use_alpha_mix_qk=use_alpha_mix_qk,
+                inductive_routing=inductive_routing,
+                use_nbf_v=use_nbf_v,
+                use_pna=use_pna)
             for _ in range(cfg.gt.layers)
         ])
 
         self.post_mp = build_head(cfg, cfg.gnn.dim_inner, dim_out)
+
+        # V-RMPNN: anchor-conditioned NBFNet value stream (KnowFormer-style).
+        # Requires edge_rel_idx (built by ExpanderEdgeFixer when use_vrmpnn=True).
+        self.vrmpnn = None
+        if use_vrmpnn and cfg.gnn.head == 'kgc':
+            assert num_relations is not None
+            self.vrmpnn = VRMPNN(cfg.gt.dim_hidden, num_relations, vrmpnn_layers)
+
+        # Tie KGCNodeEncoder.rel_emb ↔ KGCHead.rel_emb (weight sharing).
+        # Reduces one set of 22×64 = 1408 parameters; forces the boundary-condition
+        # signal and the scoring signal to use the same relational representation.
+        # Default False so transductive behavior is unchanged.
+        if getattr(cfg.gt, 'tie_rel_emb', False):
+            enc_node = getattr(self.encoder, 'node_encoder', None)
+            if (enc_node is not None and
+                    hasattr(enc_node, 'rel_emb') and
+                    hasattr(self.post_mp, 'rel_emb')):
+                self.post_mp.rel_emb.weight = enc_node.rel_emb.weight
         self.grad_checkpoint = getattr(cfg.train, 'grad_checkpoint', False)
 
     def forward(self, batch):
@@ -352,12 +513,14 @@ class MultiModel(nn.Module):
         # Save initial representation h(0) for Bellman-Ford residual in each layer.
         batch.x0 = batch.x
 
+        # V-RMPNN: compute anchor-conditioned value stream before attention layers.
+        # Stored as batch.V_stream — used by ExphormerAttention instead of W_V(h).
+        if self.vrmpnn is not None and hasattr(batch, 'anchor_idx'):
+            batch.V_stream = self.vrmpnn(batch)
+
         if self.training and self.grad_checkpoint:
             from torch.utils.checkpoint import checkpoint
             for layer in self.layers:
-                # Checkpoint boundary: save (x, edge_attr) between layers.
-                # expander_edge_index/attr and other batch attrs are captured
-                # by reference and stay alive for recomputation.
                 x_in = batch.x
                 ea_in = batch.edge_attr
 

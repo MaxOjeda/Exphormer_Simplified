@@ -17,7 +17,7 @@ from torch_geometric.datasets import (Amazon, Coauthor, GNNBenchmarkDataset)
 from torch_geometric.loader import DataLoader
 
 from loader.dataset.coco_superpixels import COCOSuperpixels
-from loader.dataset.kg_dataset import create_kg_datasets
+from loader.dataset.kg_dataset import create_kg_datasets, create_inductive_kg_datasets
 from loader.dataset.malnet_tiny import MalNetTiny
 from loader.dataset.voc_superpixels import VOCSuperpixels
 from loader.split_generator import prepare_splits, set_dataset_splits
@@ -126,15 +126,19 @@ def load_dataset(cfg):
     # KGC datasets manage their own subgraph extraction and expander edges
     # per query in __getitem__ — skip the shared PE/expander pipeline entirely.
     if fmt == 'KGC':
-        train_ds, val_ds, test_ds = create_kg_datasets(dataset_dir, cfg)
+        is_inductive = '-ind-' in name
+        if is_inductive:
+            train_ds, val_ds, test_ds = create_inductive_kg_datasets(dataset_dir, cfg)
+        else:
+            train_ds, val_ds, test_ds = create_kg_datasets(dataset_dir, cfg)
         cfg.defrost()
         cfg.dataset.num_entities  = train_ds.num_entities
         cfg.dataset.num_relations = train_ds.num_relations
         cfg.dataset.num_edge_types = train_ds.num_edge_types
         cfg.freeze()
         logging.info(
-            f"[*] Loaded KGC dataset '{name}': "
-            f"{train_ds.num_entities} entities, "
+            f"[*] Loaded {'inductive ' if is_inductive else ''}KGC dataset '{name}': "
+            f"{train_ds.num_entities} train entities, "
             f"{train_ds.num_relations} relations, "
             f"{train_ds.num_edge_types} edge types "
             f"(reciprocal={cfg.kgc.reciprocal}), "

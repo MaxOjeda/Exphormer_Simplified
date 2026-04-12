@@ -89,10 +89,19 @@ class KGCHead(nn.Module):
     entities -- no padding, every slot is valid.
     """
 
-    def __init__(self, dim_in: int, num_relations: int, dropout: float = 0.0):
+    def __init__(self, dim_in: int, num_relations: int, dropout: float = 0.0,
+                 mlp_scorer: bool = False):
         super().__init__()
         self.rel_emb = nn.Embedding(num_relations, dim_in)
-        self.scorer = nn.Linear(dim_in * 2, 1)
+        if mlp_scorer:
+            # KnowFormer-style: cat(h_v, r_q) → Linear → ReLU → Linear → score
+            self.scorer = nn.Sequential(
+                nn.Linear(dim_in * 2, dim_in),
+                nn.ReLU(),
+                nn.Linear(dim_in, 1),
+            )
+        else:
+            self.scorer = nn.Linear(dim_in * 2, 1)
         self.drop = nn.Dropout(dropout)
 
     def forward(self, batch):
@@ -121,7 +130,9 @@ def build_head(cfg, dim_in, dim_out):
     """Factory: return the appropriate head."""
     head_name = cfg.gnn.head
     if head_name == 'kgc':
-        return KGCHead(dim_in=dim_in, num_relations=cfg.dataset.num_relations, dropout=cfg.gnn.dropout)
+        return KGCHead(dim_in=dim_in, num_relations=cfg.dataset.num_relations,
+                       dropout=cfg.gnn.dropout,
+                       mlp_scorer=getattr(cfg.kgc, 'mlp_scorer', False))
     elif head_name == 'default':
         return GraphHead(dim_in, dim_out, cfg)
     elif head_name == 'inductive_node':

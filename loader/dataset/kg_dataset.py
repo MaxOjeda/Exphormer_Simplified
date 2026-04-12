@@ -725,3 +725,258 @@ def create_kg_datasets(root: str, cfg) -> tuple:
         )
 
     return train_ds, val_ds, test_ds
+
+
+# ---------------------------------------------------------------------------
+# Inductive KGC dataset  (GraIL / NBFNet splits)
+# ---------------------------------------------------------------------------
+
+class InductiveKGCDataset(KGCDataset):
+    """
+    Inductive KGC following the GraIL/NBFNet split protocol.
+
+    Training + validation are run on the *train graph* (entities E_train).
+    Test evaluation is run on the *test graph* (disjoint entities E_test,
+    same relation set R).
+
+    File layout (under ``{datasets_dir}/inductive/``):
+        {ds}_{v}/train.txt        → train graph edges
+        {ds}_{v}/valid.txt        → validation queries  (E_train entities)
+        {ds}_{v}_ind/train.txt    → test graph edges    (NEW E_test entities)
+        {ds}_{v}_ind/test.txt     → test queries        (E_test entities)
+
+    Dataset name convention: ``WN18RR-ind-v1``, ``FB15k-237-ind-v2``, etc.
+
+    Extra attributes (beyond KGCDataset):
+        test_num_entities              int
+        test_full_edge_index           (2, E_test) LongTensor
+        test_full_edge_attr            (E_test,)   LongTensor
+        test_full_expander_edge_index  (2, E_exp)  LongTensor or None
+        test_all_triples_filter        dict[(h,r)] → set(tails)  — test graph only
+        test_head_filter               dict[(t,r)] → set(heads)  — test graph only
+    """
+
+    def __init__(self, root: str, split: str, cfg, _shared: Optional[dict] = None):
+        assert split in ('train', 'val', 'test')
+        self.split = split
+        self.cfg = cfg
+        self._reciprocal = cfg.kgc.reciprocal
+        self._num_hops   = cfg.kgc.subgraph_hops
+        self._max_nodes  = cfg.kgc.max_nodes
+        # Full-graph only — no subgraph cache needed
+        self._subgraph_cache  = {}
+        self._disk_cache_path = None
+
+        if _shared is not None:
+            self._init_from_shared(_shared)
+        else:
+            self._init_load_inductive(root)
+
+        if split == 'train':
+            self._queries = self.train_triples
+        elif split == 'val':
+            self._queries = self.val_triples
+        else:
+            self._queries = self.test_triples
+
+    # ------------------------------------------------------------------
+    # Load from TSV files
+    # ------------------------------------------------------------------
+
+    def _init_load_inductive(self, root: str):
+        """Parse dataset name, locate TSV files, build train + test graphs."""
+        name = self.cfg.dataset.name          # e.g. 'WN18RR-ind-v1'
+        parts = name.split('-ind-')
+        assert len(parts) == 2, (
+            f"Inductive dataset name must be '<base>-ind-<version>', got '{name}'"
+        )
+        base, version = parts[0], parts[1]    # 'WN18RR', 'v1'
+
+        # Map base name → directory prefix used by GraIL
+        if 'WN18RR' in base.upper():
+            dir_prefix = 'WN18RR'
+        elif 'FB' in base.upper():
+            dir_prefix = 'fb237'
+        else:
+            raise ValueError(f"Unknown inductive KGC base dataset: '{base}'")
+
+        ind_dir = osp.join(root, 'inductive')
+        train_file      = osp.join(ind_dir, f'{dir_prefix}_{version}',     'train.txt')
+        valid_file      = osp.join(ind_dir, f'{dir_prefix}_{version}',     'valid.txt')
+        test_graph_file = osp.join(ind_dir, f'{dir_prefix}_{version}_ind', 'train.txt')
+        test_query_file = osp.join(ind_dir, f'{dir_prefix}_{version}_ind', 'test.txt')
+
+        for f in (train_file, valid_file, test_graph_file, test_query_file):
+            assert osp.exists(f), f"Missing inductive split file: {f}"
+
+        rel2id    = {}   # shared across train + test graphs
+        train_ent = {}   # entity vocab for training graph
+        test_ent  = {}   # entity vocab for test graph (disjoint)
+
+        def _load_tsv(fpath, ent_vocab, freeze_rel=False):
+            triples = []
+            with open(fpath) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    h_tok, r_tok, t_tok = line.split('\t')
+                    if h_tok not in ent_vocab:
+                        ent_vocab[h_tok] = len(ent_vocab)
+                    if r_tok not in rel2id:
+                        assert not freeze_rel, \
+                            f"Unseen relation in test graph: '{r_tok}'"
+                        rel2id[r_tok] = len(rel2id)
+                    if t_tok not in ent_vocab:
+                        ent_vocab[t_tok] = len(ent_vocab)
+                    triples.append((ent_vocab[h_tok], rel2id[r_tok], ent_vocab[t_tok]))
+            return triples
+
+        train_trips      = _load_tsv(train_file,      train_ent)
+        valid_trips      = _load_tsv(valid_file,       train_ent)
+        test_graph_trips = _load_tsv(test_graph_file,  test_ent,  freeze_rel=True)
+        test_query_trips = _load_tsv(test_query_file,  test_ent,  freeze_rel=True)
+
+        num_train_ent = len(train_ent)
+        num_test_ent  = len(test_ent)
+        num_base_rel  = len(rel2id)
+
+        def _t(trips):
+            return torch.tensor(trips, dtype=torch.long)
+
+        train_triples      = _t(train_trips)
+        val_triples        = _t(valid_trips)
+        test_graph_triples = _t(test_graph_trips)
+        test_triples       = _t(test_query_trips)
+
+        # Build train-side state (sets num_entities, num_relations, full_edge_index, etc.)
+        # Pass empty tensor for test_triples so _build_from_triples doesn't mix graphs.
+        self._build_from_triples(
+            train_triples, val_triples,
+            torch.zeros(0, 3, dtype=torch.long),
+            num_train_ent, num_base_rel,
+        )
+        # Override: store the actual test queries (not an empty tensor)
+        self.test_triples = test_triples
+
+        # Build test-graph state
+        self._build_test_graph(test_graph_triples, test_triples, num_test_ent, num_base_rel)
+
+        logging.info(
+            f'InductiveKGCDataset [{self.cfg.dataset.name}] loaded: '
+            f'train graph {num_train_ent} ents / {len(train_triples)} edges, '
+            f'test graph {num_test_ent} ents / {len(test_graph_triples)} edges, '
+            f'{num_base_rel} relations (reciprocal={self._reciprocal}), '
+            f'{len(train_triples)} train / {len(val_triples)} val / '
+            f'{len(test_triples)} test queries'
+        )
+
+    def _build_test_graph(self, test_graph_triples, test_queries,
+                          num_test_ent: int, num_base_rel: int):
+        """Build test-graph edge tensors, expander, and filter dicts."""
+        # Add reciprocal edges to test graph (same protocol as train graph)
+        if self._reciprocal:
+            inv = torch.stack([
+                test_graph_triples[:, 2],
+                test_graph_triples[:, 1] + num_base_rel,
+                test_graph_triples[:, 0],
+            ], dim=1)
+            test_graph_all = torch.cat([test_graph_triples, inv], dim=0)
+        else:
+            test_graph_all = test_graph_triples
+
+        # Filter dict: test graph edges + test queries (entities are disjoint
+        # from train, so train triples cannot leak into the ranking).
+        all_test = torch.cat([test_graph_all, test_queries], dim=0)
+        test_tail_filter, test_head_filter = _build_filter_dict(all_test)
+
+        # Edge tensors
+        test_full_edge_index = torch.stack(
+            [test_graph_all[:, 0], test_graph_all[:, 2]], dim=0
+        ).long()
+        test_full_edge_attr = test_graph_all[:, 1].long()
+
+        # Expander for test graph
+        test_expander = None
+        if getattr(self.cfg.prep, 'exp', False) and num_test_ent > 1:
+            logging.info(
+                f'Generating test-graph expander '
+                f'(N={num_test_ent}, deg={self.cfg.prep.exp_deg}) ...'
+            )
+            tmp = Data(num_nodes=num_test_ent)
+            generate_random_expander(
+                tmp,
+                degree=self.cfg.prep.exp_deg,
+                algorithm=self.cfg.prep.exp_algorithm,
+                max_num_iters=self.cfg.prep.exp_max_num_iters,
+                rng=None,
+                check_spectral=False,
+            )
+            test_expander = tmp.expander_edges.t()   # (2, E_exp)
+            logging.info(f'  Test expander edges: {test_expander.shape[1]}')
+
+        self.test_num_entities             = num_test_ent
+        self.test_full_edge_index          = test_full_edge_index
+        self.test_full_edge_attr           = test_full_edge_attr
+        self.test_full_expander_edge_index = test_expander
+        self.test_all_triples_filter       = test_tail_filter
+        self.test_head_filter              = test_head_filter
+
+    # ------------------------------------------------------------------
+    # Shared-state protocol (same interface as KGCDataset)
+    # ------------------------------------------------------------------
+
+    def get_shared_state(self) -> dict:
+        d = super().get_shared_state()
+        d.update({
+            'test_num_entities':             self.test_num_entities,
+            'test_full_edge_index':          self.test_full_edge_index,
+            'test_full_edge_attr':           self.test_full_edge_attr,
+            'test_full_expander_edge_index': self.test_full_expander_edge_index,
+            'test_all_triples_filter':       self.test_all_triples_filter,
+            'test_head_filter':              self.test_head_filter,
+            # Override: actual test queries (not the empty tensor set by _build_from_triples)
+            'test_triples':                  self.test_triples,
+        })
+        return d
+
+    def _init_from_shared(self, shared: dict):
+        super()._init_from_shared(shared)
+        self.test_num_entities             = shared['test_num_entities']
+        self.test_full_edge_index          = shared['test_full_edge_index']
+        self.test_full_edge_attr           = shared['test_full_edge_attr']
+        self.test_full_expander_edge_index = shared['test_full_expander_edge_index']
+        self.test_all_triples_filter       = shared['test_all_triples_filter']
+        self.test_head_filter              = shared['test_head_filter']
+        self.test_triples                  = shared['test_triples']
+
+    # ------------------------------------------------------------------
+    # No subgraph cache — inductive uses full-graph mode only
+    # ------------------------------------------------------------------
+
+    def ensure_disk_cache(self):
+        pass   # no-op: full-graph mode, __getitem__ is never called for eval
+
+    def __getitem__(self, idx: int):
+        # Called only by infer_dims (result is ignored for kgc_ranking).
+        return Data(x=torch.zeros(1, 1), num_nodes=1)
+
+
+# ---------------------------------------------------------------------------
+# Factory for inductive datasets
+# ---------------------------------------------------------------------------
+
+def create_inductive_kg_datasets(root: str, cfg) -> tuple:
+    """
+    Create (train_ds, val_ds, test_ds) for an inductive KGC benchmark.
+
+    All three splits share the same loaded graph state; loading happens once.
+    """
+    train_ds = InductiveKGCDataset(root=root, split='train', cfg=cfg)
+    shared   = train_ds.get_shared_state()
+
+    val_ds  = InductiveKGCDataset(root=root, split='val',  cfg=cfg, _shared=shared)
+    test_ds = InductiveKGCDataset(root=root, split='test', cfg=cfg, _shared=shared)
+
+    logging.info('Skipping subgraph cache (inductive full-graph mode).')
+    return train_ds, val_ds, test_ds

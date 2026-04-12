@@ -251,13 +251,25 @@ def eval_epoch_kgc(logger, loader, model, split, cfg, dataset):
         torch.cuda.empty_cache()
 
     kgc_ds      = dataset.train_ds
-    filter_dict  = kgc_ds.all_triples_filter   # {(h, r) -> set(known tails)}
-    head_filter  = kgc_ds.head_filter          # {(t, r_orig) -> set(known heads)}
     base_num_rel = kgc_ds.num_base_relations   # for detecting reciprocal queries
-    N            = kgc_ds.num_entities
 
-    full_edge_index = kgc_ds.full_edge_index.to(device)  # (2, E)
-    full_edge_attr  = kgc_ds.full_edge_attr.to(device)   # (E,)
+    # Inductive test: swap to the held-out test graph (new entities, same relations).
+    _inductive_test = (split == 'test' and hasattr(kgc_ds, 'test_num_entities'))
+    if _inductive_test:
+        filter_dict     = kgc_ds.test_all_triples_filter
+        head_filter     = kgc_ds.test_head_filter
+        N               = kgc_ds.test_num_entities
+        full_edge_index = kgc_ds.test_full_edge_index.to(device)
+        full_edge_attr  = kgc_ds.test_full_edge_attr.to(device)
+        _eval_expander  = kgc_ds.test_full_expander_edge_index
+    else:
+        filter_dict     = kgc_ds.all_triples_filter   # {(h, r) -> set(known tails)}
+        head_filter     = kgc_ds.head_filter          # {(t, r_orig) -> set(known heads)}
+        N               = kgc_ds.num_entities
+        full_edge_index = kgc_ds.full_edge_index.to(device)  # (2, E)
+        full_edge_attr  = kgc_ds.full_edge_attr.to(device)   # (E,)
+        _eval_expander  = kgc_ds.full_expander_edge_index
+
     E = full_edge_index.shape[1]
 
     queries   = kgc_ds.val_triples if split == 'val' else kgc_ds.test_triples
@@ -292,10 +304,9 @@ def eval_epoch_kgc(logger, loader, model, split, cfg, dataset):
 
     # Tile the static expander (generated once at dataset build time) for
     # eval_bs graph copies.  Sliced per chunk for the last batch (B < eval_bs).
-    # cfg.prep.exp=False → full_expander_edge_index is None → no expander edges.
-    eval_exp_ei = _tile_expander(kgc_ds.full_expander_edge_index, eval_bs, N, device)
-    E_exp = kgc_ds.full_expander_edge_index.shape[1] \
-        if kgc_ds.full_expander_edge_index is not None else 0
+    # cfg.prep.exp=False → _eval_expander is None → no expander edges.
+    eval_exp_ei = _tile_expander(_eval_expander, eval_bs, N, device)
+    E_exp = _eval_expander.shape[1] if _eval_expander is not None else 0
 
     processed  = 0
     time_start = time.time()
@@ -332,9 +343,12 @@ def eval_epoch_kgc(logger, loader, model, split, cfg, dataset):
             y              = torch.tensor(chunk_t, dtype=torch.long, device=device),
             num_nodes      = B * N,
         )
-        data.batch      = batch_assign
-        data.ptr        = ptr
-        data.num_graphs = B
+        data.batch        = batch_assign
+        data.ptr          = ptr
+        data.num_graphs   = B
+        # Raw relation indices per KG edge — used by use_nbf_v (DistMult V).
+        # ExpanderEdgeFixer appends sentinel num_relations for expander edges.
+        data.edge_rel_idx = rep_ea
 
         # Expander edges: slice the pre-generated tensor to the actual batch size.
         # ExpanderEdgeFixer detects expander_edge_index and adds it to the
@@ -511,9 +525,12 @@ def train_epoch_kgc_full(logger, model, optimizer, scheduler, cfg, dataset, cur_
             y              = chunk_t.to(device),
             num_nodes      = B * N,
         )
-        data.batch      = batch_assign
-        data.ptr        = ptr
-        data.num_graphs = B
+        data.batch        = batch_assign
+        data.ptr          = ptr
+        data.num_graphs   = B
+        # Raw relation indices (long) for use_relational_v (DistMult-style V).
+        # ExpanderEdgeFixer appends sentinel num_relations for expander edges.
+        data.edge_rel_idx = rep_ea
 
         # Expander edges: tile the static expander for B graph copies.
         # ExpanderEdgeFixer merges them with the KG edges (add_edge_index).
@@ -663,7 +680,12 @@ def custom_train(loggers, loaders, model, optimizer, scheduler, cfg, dataset=Non
             if wandb_run is not None:
                 wandb_run.log(_flatten_dict(perf), step=cur_epoch)
 
-        val_perf = perf[1] if is_main else []
+        # Which split to monitor for checkpoint selection.
+        # 'test' is valid for inductive benchmarks where val uses the train graph
+        # and does not reflect held-out performance. Defaults to 'val'.
+        _monitor_idx = (2 if getattr(cfg.train, 'ckpt_monitor_split', 'val') == 'test'
+                        else 1)
+        val_perf = perf[_monitor_idx] if (is_main and len(perf) > _monitor_idx) else []
         # --- Best-epoch summary (on eval epochs, rank 0 only) ---
         if is_main and _is_eval_epoch(cur_epoch, eval_period, max_epoch) and val_perf:
             best_epoch = int(np.array([vp.get('loss', 0)

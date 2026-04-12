@@ -22,11 +22,14 @@ class ExpanderEdgeFixer(nn.Module):
     """
 
     def __init__(self, add_edge_index=False, num_virt_node=0,
-                 dim_edge=64, dim_hidden=64):
+                 dim_edge=64, dim_hidden=64, num_relations=None):
         super().__init__()
 
         self.add_edge_index = add_edge_index
         self.num_virt_node = num_virt_node
+        # When set, builds batch.edge_rel_idx: KG edges keep their rel idx,
+        # expander edges get sentinel index num_relations (near-zero init row).
+        self.num_relations = num_relations
 
         # Learnable embedding for expander edges (single embedding shared)
         self.exp_edge_attr = nn.Embedding(1, dim_edge)
@@ -42,11 +45,14 @@ class ExpanderEdgeFixer(nn.Module):
         device = self.exp_edge_attr.weight.device
         edge_index_sets = []
         edge_attr_sets = []
+        rel_idx_sets = []   # parallel list for edge_rel_idx (only when num_relations set)
 
         # 1. Real edges
         if self.add_edge_index:
             edge_index_sets.append(batch.edge_index)
             edge_attr_sets.append(batch.edge_attr)
+            if self.num_relations is not None and hasattr(batch, 'edge_rel_idx'):
+                rel_idx_sets.append(batch.edge_rel_idx)
 
         num_node = batch.batch.shape[0]
         num_graphs = batch.num_graphs
@@ -64,6 +70,12 @@ class ExpanderEdgeFixer(nn.Module):
                     torch.zeros(exp_ei.shape[1], dtype=torch.long, device=device)
                 )
             )
+            if self.num_relations is not None:
+                # Expander edges get the sentinel index (num_relations row ≈ near-zero).
+                rel_idx_sets.append(
+                    torch.full((exp_ei.shape[1],), self.num_relations,
+                               dtype=torch.long, device=device)
+                )
         elif hasattr(batch, 'expander_edges'):
             # Subgraph mode: per-graph edge lists assembled by DataLoader.
             data_list = batch.to_data_list()
@@ -79,6 +91,11 @@ class ExpanderEdgeFixer(nn.Module):
                     torch.zeros(exp_edges.shape[1], dtype=torch.long, device=device)
                 )
             )
+            if self.num_relations is not None:
+                rel_idx_sets.append(
+                    torch.full((exp_edges.shape[1],), self.num_relations,
+                               dtype=torch.long, device=device)
+                )
 
         # 3. Virtual nodes
         if self.num_virt_node > 0:
@@ -134,4 +151,11 @@ class ExpanderEdgeFixer(nn.Module):
 
         batch.expander_edge_index = edge_index
         batch.expander_edge_attr = edge_attr
+
+        # Build combined edge_rel_idx for use_relational_v (DistMult-style V).
+        # Mirrors the order of edge_index_sets: KG edges first, expander edges second.
+        if self.num_relations is not None and rel_idx_sets:
+            batch.edge_rel_idx = torch.cat(rel_idx_sets) if len(rel_idx_sets) > 1 \
+                else rel_idx_sets[0]
+
         return batch

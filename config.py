@@ -75,6 +75,8 @@ cfg.gt.use_nbf_v = False               # DistMult-style V: msg = h_i ⊙ W_r (NB
 cfg.gt.use_vrmpnn = False              # V-RMPNN: KnowFormer-style anchor-conditioned NBFNet value stream
 cfg.gt.vrmpnn_layers = 2              # number of propagation layers in V-RMPNN
 cfg.gt.use_pna = False                 # PNA aggregation: concat(sum, mean, max) + proj (NBFNet §4)
+cfg.gt.use_distmult_v = False          # DistMult-inside-attn: msg = W_V(h_i) ⊙ W_r (keeps projection, removes gate)
+cfg.gt.ffn_type = 'full'               # FFN variant: 'full' (2-layer MLP), 'single' (1-layer+ReLU), 'none' (skip)
 cfg.gt.pna_degrees = []
 cfg.gt.bigbird = CN()              # kept for compat but not used
 cfg.gt.bigbird.attention_type = 'block_sparse'

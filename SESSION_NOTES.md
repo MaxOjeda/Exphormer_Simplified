@@ -2,6 +2,77 @@
 
 ---
 
+## Estado actual — 2026-04-13 (sesión 6)
+
+### ANÁLISIS ARQUITECTÓNICO PROFUNDO (Mauricio, sesión 6)
+
+Análisis completo del gap 0.565 → 0.741 basado en lectura de NBFNet, KnowFormer y Exphormer.
+Conclusión: el problema no es un módulo sino el flujo de información completo.
+
+**NBFNet** (0.741): propagación Bellman-Ford pura — `msg = h_src ⊙ W_r`, sum aggregation, sin atención, sin FFN. Inductivo por construcción porque `W_r` no depende de identidades de nodos.
+
+**KnowFormer** (0.752): dos streams separados — Q-RMPNN para routing estructural (sin anchor), V-RMPNN para path information (anchor-conditioned, NBFNet-style). La atención combina ambos. La ablación muestra que V-RMPNN aporta +0.063 MRR (mayor componente individual).
+
+**Nuestro modelo** (0.565): stream único. `V = W_V(h)` — proyección genérica sin dependencia relacional del mensaje. El gate `V_gate(r_ij)` escala post-proyección pero no puede seleccionar qué dimensiones de h importan POR relación (como DistMult). El FFN aprende patrones estadísticos del train graph.
+
+**Por qué fallaron los experimentos anteriores de V:**
+- `use_relational_v` (V *= rel_emb extra): dos señales multiplicativas relacionales en competencia → interferencia, 0.384
+- `use_nbf_v` (DistMult puro): eliminó W_V → h crudo inestable en marco de atención, 0.420
+- V-RMPNN: stream separado compite por gradiente con el stream principal → interferencia, 0.513
+
+**Propuesta correcta**: `use_distmult_v` — mantiene W_V (proyección estabilizadora) y añade DistMult encima: `msg = W_V(h_src) ⊙ msg_rel_emb[r]`. Remove gate. Equivalente a KnowFormer V-RMPNN pero dentro de la capa de atención, evitando competencia de gradiente.
+
+### EXPERIMENTOS COMPLETADOS EN SESIÓN 6
+
+| Config | Params | Peak val | Test @ best val | Comportamiento |
+|--------|--------|----------|-----------------|----------------|
+| **distmultv_noffn** (dim=64, L=3) | 97K | ep11, 0.361 | **0.511** | Decae desde ep12 — peor que baseline |
+| **distmultv_noffn_L5** (dim=64, L=5) | 160K | — | **~0.025** | **MUERTO** — nunca aprende (ep0-5 congelado) |
+| **indrouting_noffn_dim32** (dim=32, L=3) | 31K | ep11, 0.436 | **0.558** | Plateau estable ~0.495-0.502 post-ep30 |
+| **indrouting_ffn_dim32** (dim=32, L=3, con FFN) | 44K | ep37, 0.385 | **0.502** | Estable, sin colapso |
+| **distmultv_noffn_dim32** (dim=32, L=3) | 27K | en curso (ep21→) | ~0.471 | En ejecución (job 573786) |
+
+### ANÁLISIS DE RESULTADOS
+
+**DistMult-V NO mejora sobre el gate en dim=64 (0.511 < 0.565)**:
+La hipótesis era que `W_V(h) ⊙ W_r` sería más expresivo que `W_V(h) * gate(r)`. En dim=64 no se validó. El gate ya es suficiente selección dimensional para esta arquitectura.
+
+**L=5 + DistMult-V + sin FFN = modelo muerto**:
+MRR congelado en 0.025 durante épocas 0-5 (warmup). Sin FFN ni gate, 5 capas de DistMult sin normalización intermedia destruye el flujo de gradiente. El modelo no puede aprender.
+
+**El hallazgo principal: `indrouting_noffn_dim32` (0.558) ≈ baseline (0.565) con 4× menos params y SIN colapso**:
+- dim=32, L=3, sin FFN, con gate, inductive_routing=True
+- Peak ep11: val=0.436, test=0.558
+- Post-ep30: test estable ~0.495-0.502 (decae suavemente, no colapso)
+- 31,585 parámetros vs ~131K del baseline
+
+Esto demuestra que la capacidad del modelo NO es el factor limitante. El FFN sí daña la generalización inductiva incluso a dim=32: con FFN el mismo dim=32 da 0.502 vs 0.558 sin FFN.
+
+**Sin FFN + dim pequeño = training más estable**:
+La combinación dim=32 + sin FFN elimina los dos componentes que memorizan patrones del train graph. El resultado es casi idéntico al baseline pero con entrenamiento mucho más estable.
+
+### DIAGNÓSTICO ACTUALIZADO (sesión 6)
+
+La secuencia de ablaciones revela la importancia relativa de cada cambio:
+
+| Cambio | Δ MRR | Componente eliminado |
+|--------|-------|---------------------|
+| wV/Z → wV (sum aggregation) | +0.23 | Normalización por Z |
+| inductive_routing (K = f(r_q) only) | +0.05 | W_K(h) graph-specific |
+| sin FFN + dim=32 | ≈ 0 vs baseline, pero estable | FFN + capacidad extra |
+| DistMult-V (dim=64) | -0.054 vs baseline | gate → DistMult (regresión) |
+
+**Conclusión**: el gap residual 0.558 → 0.741 no es del V ni del FFN. Es del mecanismo de mensaje completo. El gate ya es un buen proxy del DistMult para esta arquitectura. La brecha con NBFNet/KnowFormer probablemente requiere cambios más estructurales.
+
+### EXPERIMENTO EN CURSO
+
+`distmultv_noffn_dim32` (job 573786): DistMult-V + sin FFN + dim=32.
+- Objetivo: verificar si DistMult-V añade valor sobre el gate cuando el resto del modelo es más estable (dim=32, sin FFN)
+- Log: `logs/distmultv_noffn_dim32.log`
+- Best actual (ep35): val=0.340, test=0.471 (por debajo de `indrouting_noffn_dim32` en la misma época)
+
+---
+
 ## Estado actual — 2026-04-10 (sesión 5)
 
 ### MEJOR RESULTADO ACTUAL (CONFIRMADO CON val ckpt)

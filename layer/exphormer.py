@@ -15,7 +15,8 @@ class ExphormerAttention(nn.Module):
                  use_virt_nodes=False, use_edge_gating=False,
                  use_query_conditioning=False, num_relations=None,
                  gate_rel_mult=False, use_alpha_mix_qk=False,
-                 inductive_routing=False, use_nbf_v=False, use_pna=False):
+                 inductive_routing=False, use_nbf_v=False, use_pna=False,
+                 use_distmult_v=False):
         super().__init__()
 
         if out_dim % num_heads != 0:
@@ -51,6 +52,23 @@ class ExphormerAttention(nn.Module):
             # +1 for expander edge sentinel (index = num_relations, near-zero init row)
             self.nbf_rel_emb = nn.Embedding(num_relations + 1, self.out_dim * num_heads)
             nn.init.xavier_uniform_(self.nbf_rel_emb.weight.view(
+                num_relations + 1, num_heads, self.out_dim
+            ).reshape(num_relations + 1, -1))
+
+        # DistMult-inside-attention: msg(i→j,r) = W_V(h_i) ⊙ W_r
+        # Keeps the W_V projection (unlike use_nbf_v which uses raw h) for stability,
+        # then applies relation-specific element-wise scaling after projection.
+        # This lets the model select dimensions per relation — the gate V_gate(r)
+        # only scales post-projection and cannot unmix projected dimensions.
+        # Mutually exclusive with use_nbf_v and use_edge_gating.
+        self.use_distmult_v = use_distmult_v
+        if use_distmult_v:
+            assert num_relations is not None, "use_distmult_v requires num_relations"
+            assert not use_edge_gating, "use_distmult_v and use_edge_gating are mutually exclusive"
+            assert not use_nbf_v, "use_distmult_v and use_nbf_v are mutually exclusive"
+            # +1 for expander edge sentinel (index = num_relations)
+            self.msg_rel_emb = nn.Embedding(num_relations + 1, self.out_dim * num_heads)
+            nn.init.xavier_uniform_(self.msg_rel_emb.weight.view(
                 num_relations + 1, num_heads, self.out_dim
             ).reshape(num_relations + 1, -1))
 
@@ -104,7 +122,14 @@ class ExphormerAttention(nn.Module):
         score = torch.exp(score.sum(-1, keepdim=True).clamp(-5, 5))
 
         # Value for each edge.
-        if self.use_nbf_v:
+        if self.use_distmult_v:
+            # DistMult-inside-attention: msg(i→j,r) = W_V(h_i) ⊙ W_r
+            # batch.V_h = W_V(h) reshaped to (N, heads, out_dim) — see forward().
+            # msg_rel_emb[r] provides per-relation dimension selection after projection.
+            rel_w = self.msg_rel_emb(batch.edge_rel_idx.to(torch.long))  # (E, heads*out_dim)
+            rel_w = rel_w.view(-1, self.num_heads, self.out_dim)
+            v_src = batch.V_h[edge_index[0].to(torch.long)] * rel_w      # (E, heads, out_dim)
+        elif self.use_nbf_v:
             # NBFNet-style DistMult: msg(i→j,r) = h_i ⊙ W_r
             # batch.V_h contains raw h (no W_V projection) reshaped to (N, heads, out_dim).
             # batch.edge_rel_idx contains relation indices per combined edge (KG + expander).

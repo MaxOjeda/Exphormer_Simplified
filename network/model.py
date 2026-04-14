@@ -49,10 +49,11 @@ class FeatureEncoder(nn.Module):
         if 'Exphormer' in cfg.gt.layer_type:
             # ExpanderEdgeFixer needs num_relations when use_nbf_v=True so it can
             # build batch.edge_rel_idx (KG rel indices + sentinel for expander edges).
-            _use_nbf_v  = getattr(cfg.gt, 'use_nbf_v',  False)
-            _use_vrmpnn = getattr(cfg.gt, 'use_vrmpnn', False)
-            # edge_rel_idx needed by both use_nbf_v and use_vrmpnn
-            _exp_num_rel = cfg.dataset.num_relations if (_use_nbf_v or _use_vrmpnn) else None
+            _use_nbf_v      = getattr(cfg.gt, 'use_nbf_v',       False)
+            _use_vrmpnn     = getattr(cfg.gt, 'use_vrmpnn',      False)
+            _use_distmult_v = getattr(cfg.gt, 'use_distmult_v',  False)
+            # edge_rel_idx needed by use_nbf_v, use_vrmpnn, and use_distmult_v
+            _exp_num_rel = cfg.dataset.num_relations if (_use_nbf_v or _use_vrmpnn or _use_distmult_v) else None
             self.exp_edge_fixer = ExpanderEdgeFixer(
                 add_edge_index=cfg.prep.add_edge_index,
                 num_virt_node=cfg.prep.num_virt_node,
@@ -166,7 +167,8 @@ class GlobalModel(nn.Module):
                  layer_norm=False, batch_norm=True, exp_edges_cfg=None,
                  use_edge_gating=False, use_query_conditioning=False,
                  num_relations=None, gate_rel_mult=False, use_alpha_mix_qk=False,
-                 inductive_routing=False, use_nbf_v=False, use_pna=False):
+                 inductive_routing=False, use_nbf_v=False, use_pna=False,
+                 use_distmult_v=False):
         super().__init__()
         self.dim_h = dim_h
         self.layer_norm = layer_norm
@@ -183,7 +185,8 @@ class GlobalModel(nn.Module):
                                             use_alpha_mix_qk=use_alpha_mix_qk,
                                             inductive_routing=inductive_routing,
                                             use_nbf_v=use_nbf_v,
-                                            use_pna=use_pna)
+                                            use_pna=use_pna,
+                                            use_distmult_v=use_distmult_v)
 
         if layer_norm and batch_norm:
             raise ValueError("Cannot use both layer_norm and batch_norm.")
@@ -223,12 +226,14 @@ class MultiLayer(nn.Module):
                  layer_norm=False, batch_norm=True, exp_edges_cfg=None,
                  use_edge_gating=False, use_query_conditioning=False,
                  num_relations=None, gate_rel_mult=False, use_alpha_mix_qk=False,
-                 inductive_routing=False, use_nbf_v=False, use_pna=False):
+                 inductive_routing=False, use_nbf_v=False, use_pna=False,
+                 use_distmult_v=False, ffn_type='full'):
         super().__init__()
         self.dim_h = dim_h
         self.layer_norm = layer_norm
         self.batch_norm = batch_norm
         self.model_types = model_types
+        self.ffn_type = ffn_type  # 'full' | 'single' | 'none'
 
         models = []
         for layer_spec in model_types:
@@ -259,7 +264,8 @@ class MultiLayer(nn.Module):
                     use_alpha_mix_qk=use_alpha_mix_qk,
                     inductive_routing=inductive_routing,
                     use_nbf_v=use_nbf_v,
-                    use_pna=use_pna))
+                    use_pna=use_pna,
+                    use_distmult_v=use_distmult_v))
             elif layer_type in ('CustomGatedGCN', 'GCN', 'GINE', 'GAT'):
                 models.append(LocalModel(
                     dim_h=dim_h, local_gnn_type=layer_type,
@@ -271,9 +277,13 @@ class MultiLayer(nn.Module):
 
         self.models = nn.ModuleList(models)
 
-        # Shared Feed-Forward block
-        self.ff_linear1 = nn.Linear(dim_h, dim_h * 2)
-        self.ff_linear2 = nn.Linear(dim_h * 2, dim_h)
+        # Feed-Forward block: 'full' = 2-layer MLP (default), 'single' = 1-layer+ReLU, 'none' = skip
+        if ffn_type == 'full':
+            self.ff_linear1 = nn.Linear(dim_h, dim_h * 2)
+            self.ff_linear2 = nn.Linear(dim_h * 2, dim_h)
+        elif ffn_type == 'single':
+            self.ff_linear1 = nn.Linear(dim_h, dim_h)
+        # ffn_type == 'none': no FFN parameters
         if layer_norm:
             self.norm2 = nn.LayerNorm(dim_h)
         if batch_norm:
@@ -290,7 +300,8 @@ class MultiLayer(nn.Module):
         h = sum(h_out_list)
 
         # Feed-Forward block
-        h = h + self._ff_block(h)
+        if self.ffn_type != 'none':
+            h = h + self._ff_block(h)
         if self.layer_norm:
             h = self.norm2(h)
         if self.batch_norm:
@@ -306,8 +317,11 @@ class MultiLayer(nn.Module):
         return batch
 
     def _ff_block(self, x):
-        x = self.ff_dropout1(F.relu(self.ff_linear1(x)))
-        return self.ff_dropout2(self.ff_linear2(x))
+        if self.ffn_type == 'full':
+            x = self.ff_dropout1(F.relu(self.ff_linear1(x)))
+            return self.ff_dropout2(self.ff_linear2(x))
+        else:  # 'single'
+            return self.ff_dropout1(F.relu(self.ff_linear1(x)))
 
     def extra_repr(self):
         return (f'dim_h={self.dim_h}, model_types={self.model_types}')
@@ -460,8 +474,10 @@ class MultiModel(nn.Module):
         use_vrmpnn         = getattr(cfg.gt, 'use_vrmpnn', False)
         vrmpnn_layers      = getattr(cfg.gt, 'vrmpnn_layers', 2)
         use_pna            = getattr(cfg.gt, 'use_pna', False)
-        # num_relations needed for query conditioning, nbf_v, or vrmpnn
-        num_relations      = cfg.dataset.num_relations if (use_query_cond or use_nbf_v or use_vrmpnn) else None
+        use_distmult_v     = getattr(cfg.gt, 'use_distmult_v', False)
+        ffn_type           = getattr(cfg.gt, 'ffn_type', 'full')
+        # num_relations needed for query conditioning, nbf_v, vrmpnn, or distmult_v
+        num_relations      = cfg.dataset.num_relations if (use_query_cond or use_nbf_v or use_vrmpnn or use_distmult_v) else None
         self.layers = nn.Sequential(*[
             MultiLayer(
                 dim_h=cfg.gt.dim_hidden,
@@ -480,7 +496,9 @@ class MultiModel(nn.Module):
                 use_alpha_mix_qk=use_alpha_mix_qk,
                 inductive_routing=inductive_routing,
                 use_nbf_v=use_nbf_v,
-                use_pna=use_pna)
+                use_pna=use_pna,
+                use_distmult_v=use_distmult_v,
+                ffn_type=ffn_type)
             for _ in range(cfg.gt.layers)
         ])
 

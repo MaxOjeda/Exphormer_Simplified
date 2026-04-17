@@ -76,7 +76,9 @@ cfg.gt.use_vrmpnn = False              # V-RMPNN: KnowFormer-style anchor-condit
 cfg.gt.vrmpnn_layers = 2              # number of propagation layers in V-RMPNN
 cfg.gt.use_pna = False                 # PNA aggregation: concat(sum, mean, max) + proj (NBFNet §4)
 cfg.gt.use_distmult_v = False          # DistMult-inside-attn: msg = W_V(h_i) ⊙ W_r (keeps projection, removes gate)
+cfg.gt.use_rel_matrix_v = False        # Full relation-specific matrix: msg = h_i @ W_r[r_uv] — NBFNet-exact, no shared W_V
 cfg.gt.ffn_type = 'full'               # FFN variant: 'full' (2-layer MLP), 'single' (1-layer+ReLU), 'none' (skip)
+cfg.gt.use_film_ffn = False            # FiLM conditioning of FFN on query relation: relu(ff1(h))*(1+γ(r_q))+β(r_q)
 cfg.gt.pna_degrees = []
 cfg.gt.bigbird = CN()              # kept for compat but not used
 cfg.gt.bigbird.attention_type = 'block_sparse'

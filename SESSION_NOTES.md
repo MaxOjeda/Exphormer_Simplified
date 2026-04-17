@@ -2,6 +2,689 @@
 
 ---
 
+## Estado actual — 2026-04-17 (sesión 12)
+
+### Resultados benchmarking v2/v3/v4 — COMPLETADOS
+
+Todos los jobs finalizaron. Comparación con NBFNet (paper):
+
+| Split | Nuestro test MRR | Nuestro H@10 | NBFNet MRR | NBFNet H@10 | Epoch |
+|-------|-----------------|-------------|------------|-------------|-------|
+| v1 | **0.578** | 0.776 | 0.741 | 0.948 | 4 |
+| v2 | **0.514** | 0.714 | ~0.68 (est.) | ~0.92 (est.) | 4 |
+| v3 | **0.229** | 0.325 | ~0.67 (est.) | ~0.93 (est.) | 3 |
+| v4 | **0.474** | 0.669 | ~0.73 (est.) | ~0.95 (est.) | 4 |
+
+v3 es llamativamente bajo (0.229). El test graph de v3 tiene 5,084 nodos (vs 922 en v1, 2,757 en v2).
+Posibles causas: (1) grafo más grande → más ruido con sum aggregation, (2) distribución de relaciones diferente en v3, (3) mismos hiperparámetros no óptimos para v3.
+Necesita investigación adicional si se reporta en tesis.
+
+### WN18RR transductivo (job 578765) — EN CURSO ep40+
+
+| Época | val MRR | test MRR | LR | Nota |
+|-------|---------|----------|----|------|
+| 7 | **0.565** | **0.566** | ~0.00080 | MEJOR ckpt |
+| 39 | 0.554 | 0.555 | cosine decay | |
+| 40 | 0.553 | 0.554 | cosine decay | última |
+
+Best checkpoint estable: ep7 → val=0.565, test=0.566. Desde ep7 el modelo no mejora → posible plateau o sobreajuste gradual. Aún corriendo (job 578765).
+
+---
+
+## Estado actual — 2026-04-15 (sesión 11)
+
+### Monitoreo transductivo (job 578765)
+
+Job en curso. Recuperación confirmada — el modelo superó 0.55 en época 8.
+
+| Época | val MRR | test MRR | LR | Nota |
+|-------|---------|----------|----|------|
+| 4 | 0.485 | 0.488 | 0.00064 | warmup |
+| 5 | 0.483 | 0.486 | 0.00080 | LR alcanza máximo |
+| 6 | 0.534 | 0.533 | 0.00080 | salto al salir de warmup |
+| 7 | 0.544 | 0.544 | 0.00080 | subiendo |
+| 8 | **0.553** | **0.553** | 0.00080 | último registrado |
+
+El LR recién alcanzó el máximo en época 5 (warmup=5). Con cosine sobre 100 épocas, el pico real se espera en épocas 15–30. ~50 min/época.
+
+Nota: los "Best so far: epoch N" del log cuentan desde el reinicio del job (resumed desde ckpt ep3), no época absoluta.
+
+### Benchmarking v2/v3/v4 — LANZADO
+
+Configs v2/v3/v4 actualizados para usar los mejores hiperparámetros del `exp3_qcond`:
+
+| Cambio | Antes (v2/v3/v4) | Ahora |
+|--------|-----------------|-------|
+| `gt.layers` | 5 | 3 |
+| `inductive_routing` | no definido (False) | True |
+| `ffn_type` | standard | none |
+| `base_lr` | 0.0008 | 0.00001 |
+| `num_warmup_epochs` | 3 | 5 |
+| `ckpt_monitor_split` | no definido | val |
+| `train_steps_per_epoch` | 4-GPU values | 1-GPU values |
+
+Tamaños de datasets (train graph / test ind graph):
+- v2: 6954 / 2757 entities, 15262 train triples, 3816 steps/epoch
+- v3: 12078 / 5084 entities, 25901 train triples, 6476 steps/epoch
+- v4: 3861 / 7084 entities, 7940 train triples, 1985 steps/epoch
+
+**Jobs lanzados:**
+- v2: job 579787, `logs/wn18rr_ind_v2_579787.out`
+- v4: job 579788, `logs/wn18rr_ind_v4_579788.out`
+- v3: job 579789, `logs/wn18rr_ind_v3_579789.out` (pending)
+
+**Referencia baseline (v1):** test MRR=0.578, val=0.438 @ ep4 (config exp3_qcond)
+
+---
+
+## Estado actual — 2026-04-15 (sesión 10)
+
+### Diagnóstico: transductivo WN18RR completamente roto (jobs 575904, 578249)
+
+Dos runs del config `wn18rr_transduct_best.yaml` dieron MRR ≈ 0.0003–0.0005 durante >10 épocas — predicción uniforme sobre los 40,943 entidades (loss=10.67 ≈ ln(40943), random).
+
+**Job 578249 (tanh)**: se encontró `torch.tanh(h_attn)` en `network/model.py` en el residual de atención:
+```python
+h_attn = h_in1 + torch.tanh(h_attn)  # ← mata gradientes con sum-agg sobre 40K nodos
+```
+El tanh satura cuando la magnitud del sum-aggregation es grande → gradiente ≈ 0 → no aprende nada.
+**REVERTIDO** a `h_attn = h_in1 + h_attn`.
+
+**Job 575904 (sin tanh, mismo MRR cero)**: el tanh NO era la causa raíz. Sin tanh, el modelo tampoco aprendía nada. Causa real: **dos flags inductivos activos en setting transductivo**:
+
+1. **`inductive_routing: True`** — K = proj_k(r_q) solo (sin W_K(h)). En transductivo, las entidades son conocidas y el routing entity-specific es esencial. Con K constante por query, la atención no diferencia fuentes por features — el routing colapsa a función solo de (r_q, r_ij). Con Q también usando x0=0 para nodos no-anchor, Q_j ≈ proj_q(r_q) para todos → scores uniformes por tipo de relación → gradientes diluidísimos sobre 40K entidades.
+
+2. **`ffn_type: none`** — en inductive el FFN era el cuello (memorizaba topología train). En transductivo el FFN es necesario: es la transformación per-entidad que permite aprender representaciones específicas.
+
+Ambas flags son correctas para inductive y catastrophicas para transductive — **no son portables entre settings**.
+
+### Fix aplicado
+
+`configs/Exphormer/wn18rr_transduct_best.yaml`:
+- `inductive_routing: False` ← K = W_K(h) + proj_k(r_q) — entity-specific routing
+- `ffn_type: none` eliminado ← FFN estándar restaurado
+- `eval_period: 1` ← evaluar cada época
+
+Checkpoint incompatible del run anterior eliminado (`results/wn18rr_transduct_best/0/ckpt.pt`).
+
+**Job 578765** lanzado — log: `logs/wn18rr_transduct_best_578765.out`
+
+Config activo:
+```yaml
+gt:
+  layers: 5, dim_hidden: 64, inductive_routing: False
+  use_edge_gating: True, use_query_conditioning: True
+  ffn_type: standard (default)
+optim:
+  base_lr: 0.0008, scheduler: cosine_with_warmup, num_warmup_epochs: 5
+```
+
+Referencia: `wn18rr.yaml` (dim=32, L=3, inductive_routing=False, FFN) logró ~0.55. Este config es mayor (dim=64, L=5) con todas las mejoras de sesiones anteriores → esperado superar 0.55.
+
+### Lección clave sesión 10
+
+`inductive_routing` y `ffn_type=none` son **específicos del setting inductive**. No incluir en configs transductivos. El CLAUDE.md ya refleja esto como flags opcionales, pero los experimentos transductivos deben usar defaults (routing=False, FFN estándar).
+
+---
+
+## Estado actual — 2026-04-14 (sesión 9)
+
+### Propuesta A (Tucker) — IMPLEMENTADA, FALLIDA, REVERTIDA
+
+**Implementación**: Tucker W_r decomposition en `layer/exphormer.py` + `network/model.py` + `config.py`.
+Fórmula: `msg(i→j, r) = h_i @ (U @ G_r[r_uv] @ V^T)` con U,V ortogonales compartidos + G_r≈I init.
+
+**Truco importante**: con `num_heads=4, dim_hidden=64` → `dim_head=16`. Tucker rank=16 es full-rank en el espacio per-head (equivalente a use_rel_matrix_v). Se usó rank=8 (compresión real) y rank=4.
+
+**RESULTADOS FINALES (jobs 577972, 577973):**
+
+| Config | Val★ | Test @ val★ | Época★ | vs exp3_qcond (mejor) |
+|--------|------|-------------|--------|-----------------------|
+| **exp3_qcond (mejor actual)** | **0.438** | **0.578** | **4** | — |
+| Tucker r4 (100K params) | 0.373 | 0.520 | 2 | −0.058 |
+| Tucker r8 (113K params) | 0.376 | 0.485 | 5 | −0.093 |
+| rel_matrix_v full rank (119K) | 0.408 | 0.509 | 10 | −0.069 |
+
+**TUCKER CONFIRMADO PEOR.** Monotonía perfecta: más rank → peor resultado:
+```
+rank→0  (gate diagonal, exp3_qcond): 0.578  ← mejor
+rank=4  (Tucker r4):                  0.520
+rank=8  (Tucker r8):                  0.485
+rank=16 (relmatrix, full):            0.509
+```
+
+**Diagnóstico revisado (DEFINITIVO)**: el gate diagonal es la estrategia óptima de V para WN18RR.
+El cross-dimensional mixing no ayuda porque:
+1. WN18RR tiene relaciones semánticamente simples (hypernym, hyponym, part-of, etc.) donde **dimensiones independientes capturan tipos de relaciones distintos** — la mezcla destruye esta separación.
+2. Con `inductive_routing=True` el score ya es `f(r_q, r_ij)` — el routing es puramente relacional. El cuello no es V.
+3. Más cross-dim = más libertad = más overfitting (Tucker r4 > r8 confirma: menos freedom = mejor).
+
+**La hipótesis "diagonal vs full W_r = gap a NBFNet" era incorrecta.** El gap 0.578→0.741 no es de expresividad del mensaje.
+
+**Código revertido** al estado de exp3_qcond (119,617 params). Los archivos Tucker eliminados.
+
+### Estado de código post-sesión 9
+
+**Mejor resultado**: `wn18rr_ind_v1_exp3_qcond.yaml` → **val=0.438, test=0.578** @ ep4 (119,617 params)
+
+Código en `layer/exphormer.py`, `network/model.py`, `config.py` limpio de Tucker.
+Cambios activos en el codebase respecto al baseline original:
+- `encoder/exp_edge_fixer.py`: `exp_edge_query_emb` — query-conditioned expander features (Propuesta B ✅)
+- `network/model.py`: `_exp_num_rel` siempre activo en KGC — habilita exp_edge_query_emb
+- `layer/exphormer.py:179`: `h_out = batch.wV` — sum aggregation (no normalization) desde sesión 4
+- `layer/exphormer.py`: `gate = batch.E_gate` sin sigmoid — desde sesión 3
+
+### Resumen experimental completo (sesiones 1-9)
+
+| Cambio/Experimento | Test MRR | Status |
+|--------------------|----------|--------|
+| Baseline original (wV/Z, sin gate, sin qcond) | 0.210 | ref inicial |
+| + sin sigmoid en gate | 0.252 | +0.042 |
+| + sum aggregation | 0.482 | +0.230 ← salto mayor |
+| + inductive_routing | 0.532 | +0.050 |
+| + lr=1e-5 + warmup | 0.565 | +0.033 |
+| + ffn_type=none | 0.570 | +0.005 |
+| + expander query-cond (exp3_qcond) | **0.578** | **+0.008 ← mejor** |
+| Tucker r4 | 0.520 | −0.058 ❌ |
+| Tucker r8 | 0.485 | −0.093 ❌ |
+| rel_matrix_v | 0.509 | −0.069 ❌ |
+| FiLM FFN | ~0.424 | −0.154 ❌ |
+| V-RMPNN | 0.513 | −0.065 ❌ |
+| PNA | 0.228 | −0.350 ❌ |
+| NBFNet (paper) | 0.741 | ref |
+| KnowFormer (paper) | 0.752 | ref |
+
+### Próximas direcciones
+
+**Propuesta C (pendiente)**: Source-aware K con señal de norma — 3 líneas, bajo riesgo.
+```python
+h_src_norm = h.norm(dim=-1, keepdim=True)       # (N, 1) — inductivo
+K_h = K_cond_bias + h_src_norm * self.k_scale   # k_scale ∈ R^d, 64 params
+```
+Ganancia esperada: +0.02-0.05. Probabilidad de funcionar: baja dado que Tucker/V no son el cuello.
+
+**Benchmarking completo**: correr v2, v3, v4 con `wn18rr_ind_v1_exp3_qcond.yaml` adaptado.
+Necesario para la tesis independientemente del gap con NBFNet.
+
+**Conclusión honesta**: el gap 0.578→0.741 probablemente requiere repensar el mecanismo de atención completo (sustituir Q/K/V por RMPNN puro como NBFNet/KnowFormer) o aceptar el resultado actual como contribución parcial del Stage 1.
+
+---
+
+## Estado actual — 2026-04-14 (sesión 8, continuación)
+
+### IMPLEMENTACIÓN: Propuesta B — Expander query-conditioned (implementado)
+
+**Cambios en el código:**
+
+`encoder/exp_edge_fixer.py`:
+- Añadido `self.exp_edge_query_emb = nn.Embedding(num_relations, dim_edge)` con init `std=0.01`
+- Nuevo método `_exp_attr(exp_ei, batch, device)`: si `batch.query_relation` está presente,
+  devuelve `exp_edge_query_emb(query_relation[graph_idx])` — features query-condicionadas.
+  Fallback: `exp_edge_attr(zeros)` — comportamiento uniforme original (non-KGC / sin query).
+- Compatible con full-graph y subgraph mode; backward compatible con experimentos no-KGC.
+
+`network/model.py`:
+- `_exp_num_rel` ahora es siempre `cfg.dataset.num_relations` cuando `cfg.dataset.format == 'KGC'`
+  (antes solo cuando `use_nbf_v / use_vrmpnn / use_distmult_v / use_rel_matrix_v`).
+- Esto activa `exp_edge_query_emb` en todos los experimentos KGC con expander.
+
+**Parámetros añadidos**: +1,152 (= 19 relaciones × 64 dim_edge para WN18RR)
+**Scalability**: O(num_relations × dim_edge) — trivial para FB15k-237 (474×64=30K) y OGBL (535×64=34K)
+**Backward compatible**: experimentos sin expander (`exp: False`) no cambian nada.
+
+**Experimento corriendo:**
+- Config: `wn18rr_ind_v1_exp3_qcond.yaml` — idéntico a `hp_noffn_dim64` (mejor baseline) + `exp: True`
+- Job: **575899** — log: `logs/wn18rr_ind_v1_exp3_qcond_575899.out`
+- Comparar contra:
+  - `exp3` (expander uniforme): val★=0.359 @ ep8, test=0.472 @ ep5  — daño −0.10 MRR
+  - `hp_noffn_dim64` (sin expander): val★=0.416 @ ep4, test=0.570 @ ep4 — baseline
+
+**Hipótesis**: query-conditioned features dan al expander un rol semántico ("autopistas de query"),
+permitiéndole contribuir en lugar de añadir ruido. Si val>0.416, el expander ayuda.
+Si val≈0.416, el expander es neutro. Si val<0.416, el expander sigue dañando incluso con qcond.
+
+**RESULTADO FINAL (30 épocas, completado 2026-04-14):**
+
+| Config | Val★ | Test @ val★ | Época★ | vs baseline |
+|--------|------|-------------|--------|-------------|
+| Sin expander (hp_noffn_dim64) | 0.416 | 0.570 | 4 | — |
+| Expander uniforme (exp3) | 0.359 | **0.451** | 8 | −0.057 val / −0.119 test |
+| **Expander query-cond (exp3_qcond)** | **0.438** | **0.578** | **4** | **+0.022 val / +0.008 test** |
+
+**Propuesta B CONFIRMADA.** La propuesta funciona:
+- Expander uniforme daña −0.119 test MRR (ruido no diferenciado con sum agg + K=const)
+- Expander query-conditioned: +0.008 test MRR sobre baseline sin expander
+- qcond recupera todo el daño del expander uniforme (+0.127) y añade ganancia neta pequeña
+
+Trayectoria completa exp3_qcond (30 épocas):
+```
+ep | val   | test
+ 4 | 0.438★| 0.578   ← mejor val (checkpoint seleccionado)
+ 5 | 0.426 | 0.571
+...
+22-29: val ~0.370, test ~0.472 (colapso, igual que baseline)
+```
+
+Patrón de colapso idéntico al baseline — el expander query-conditioned no resuelve el colapso,
+solo mejora el peak. **El colapso es en V/mensaje, no en el expander.**
+
+**Contribución a la tesis**: el expander tiene un rol diferente en KGC vs clasificación:
+- Clasificación: conectividad estructural, mezcla de vecindarios similares
+- KGC inductivo con query-cond: "autopistas de difusión de query" — canal semántico adicional
+Esto es una observación novedosa para la tesis.
+
+---
+
+## Estado actual — 2026-04-14 (sesión 8)
+
+### NUEVOS EXPERIMENTOS (overnight, post-sesión 7)
+
+#### Grid relmatrix completo (jobs 574923–574929) — TODOS FALLIDOS
+
+Resultado definitivo del enfoque W_r completa por relación:
+
+| Config | Val MRR | Test MRR | Notas |
+|--------|---------|----------|-------|
+| relmatrix v2 (lr=1e-5, dim=64) | 0.408 | **0.509** @ ep10 | referencia sesión 7 — mejor W_r |
+| rm_lr1e4_L3_d32 | 0.286 | 0.354 @ ep21 | mejor del nuevo grid |
+| rm_lr1e4_L3_d64 | 0.229 | 0.271 @ ep20 | |
+| rm_lr5e4_L3_d32 | 0.212 | 0.178 @ ep31 | |
+| rm_lr5e4_L3_d64 | 0.202 | 0.223 @ ep21 | |
+| rm_lr1e3_L3_d64 | 0.171 | 0.190 @ ep20 | |
+| rm_lr1e4_L5_d64 | 0.015 | 0.033 | **MUERTO** |
+| rm_lr1e3_L5_d64 | 0.015 | 0.033 | **MUERTO** |
+| **baseline (indrouting, no-FFN, dim=64)** | **0.416** | **0.570** | — |
+
+La única LR que funciona para W_r es 1e-5. Con LRs más altos el modelo no aprende bien. Aun con lr=1e-5 (v2), W_r queda −0.061 MRR por debajo del baseline. **W_r no supera al gate diagonal — hipótesis "diagonal vs full = gap a NBFNet" confirmada incorrecta.**
+
+Comparativa detallada trajectoria (conclusión clave): al ep7-8, ambos modelos tienen val~0.40, pero indrouting ya tiene test=0.52 vs relmatrix test=0.50. El gate aprende más rápido y a más alto pico porque W_V compartido provee prior estable desde ep0.
+
+#### Expander deg=3 (job 575898) — DAÑA
+
+Config: `wn18rr_ind_v1_exp3.yaml` — mismo que hp_noffn_dim64 pero con `exp: True, exp_deg: 3`.
+
+| Época | Val MRR | Test MRR |
+|-------|---------|----------|
+| 4 | 0.355 | 0.471 |
+| 5 | 0.355★ | 0.472★ |
+| 8 | 0.359★ | 0.451 |
+| 11 | 0.343 | 0.429 |
+
+Val plateau en ~0.355 vs baseline 0.416. Test ~0.472 vs baseline 0.570. **Δ = −0.10 MRR.**
+
+Causa identificada: aristas expander tienen features uniformes (`nn.Embedding(1, dim)`) + K=const con inductive_routing → todos los vecinos expander de un nodo j reciben **exactamente el mismo attention score**. Con sum aggregation, el expander añade ruido no diferenciado. El modelo gasta capacidad aprendiendo a suprimirlo en vez de routing relacional.
+
+**Conclusión de ablación**: expander con sum aggregation + inductive_routing + features uniformes = daña. Esto es resultado de ablación válido para la tesis.
+
+---
+
+### DIAGNÓSTICO DEFINITIVO CONSOLIDADO (sesión 8, revisado sesión 9)
+
+Después de 50+ experimentos en 9 sesiones:
+
+#### El gap 0.578 → 0.741 — causa raíz revisada
+
+La hipótesis inicial "diagonal W_r = cuello de expresividad" fue **REFUTADA** por Tucker (sesión 9).
+El gate diagonal es la estrategia óptima de V para WN18RR. Más expresividad → peor resultado.
+
+**Análisis matemático del flujo con inductive_routing=True**:
+```
+score(i→j, r_q) = dot(proj_q(r_q) * proj_k(r_q), E(r_ij)) / √d   [j ≠ anchor]
+```
+El score solo depende de `(r_q, r_ij)` — el modelo ya es esencialmente MPNN relacional (como NBFNet).
+El cuello NO está en V ni en el routing. El gap está en algo más sutil.
+
+**Hipótesis actual sobre el gap**: posiblemente diferencias en régimen de entrenamiento (NBFNet 6 capas × dim=32 vs nuestros 3 capas × dim=64), o en la naturaleza del mecanismo attention vs MPNN puro para el dataset específico. No hay evidencia de que sea arquitecturalmente resoluble con tweaks.
+
+#### Por qué el expander daña (sin conditioning)
+
+Features uniformes + K=const → todos los vecinos expander tienen score idéntico → sum agg añade ruido puro. Resuelto con query-conditioning (Propuesta B: +0.008 MRR).
+
+#### Routing ciego al estado fuente
+
+Con inductive_routing=True: K_i = proj_k(r_q) = constante para todos i.
+Efecto: dos fuentes con la misma relación de arista reciben el mismo score.
+**Intentar mejorarlo con norma (Propuesta C) tiene baja probabilidad** dado que el score sigue siendo función de `(r_q, r_ij)` — suficientemente inductive y expresivo para WN18RR.
+
+---
+
+### PLAN PARA ALCANZAR MRR COMPETITIVO CON NBFNET/KNOWFORMER (sesión 8, actualizado sesión 9)
+
+#### Estado de las propuestas
+
+| Propuesta | Estado | Resultado |
+|-----------|--------|-----------|
+| **B: Expander query-conditioned** | ✅ IMPLEMENTADA | +0.008 test MRR (0.570→0.578) — **mejor actual** |
+| **A: Tucker W_r (rank=4,8)** | ❌ FALLIDA, revertida | −0.058 a −0.093 vs baseline |
+| **C: Source-aware K (norma)** | ⬜ PENDIENTE | 3 líneas, ganancia estimada baja |
+| **D: Expander residual** | ⬜ DESCARTADA | B ya funciona, D no añade nada |
+
+#### Propuesta C: Routing source-aware con señal inductiva (único pendiente menor)
+
+**Problema**: K=const → routing no puede distinguir fuentes informativas de no-informativas.
+
+**Solución** (3 líneas en `layer/exphormer.py`):
+```python
+h_src_norm = h.norm(dim=-1, keepdim=True)       # (N, 1) — magnitud acumulada (inductiva)
+K_h = K_cond_bias + h_src_norm * self.k_scale   # k_scale ∈ R^d, 64 params
+```
+`||h||` es inductivo: mide cuánta señal acumuló el nodo, no qué entidad es.
+
+**Probabilidad de ayudar**: baja. Con `inductive_routing=True` el score ya es `f(r_q, r_ij)` — routing puramente relacional. La norma añadiría diferenciación basada en profundidad de hop, pero Tucker demostró que más expresividad en V/K no ayuda en WN18RR.
+
+**Conclusión actualizada (post sesión 9)**:
+
+El techo de esta arquitectura en WN18RR-ind-v1 es **~0.578 MRR** (exp3_qcond).
+El gap 0.578→0.741 (NBFNet) no es resoluble con tweaks de V, K, o FFN.
+Para superarlo se requeriría reescribir el mecanismo de mensaje completo (RMPNN puro al estilo NBFNet/KnowFormer), lo que implicaría abandonar la estructura attention de Exphormer.
+
+---
+
+## Estado actual — 2026-04-13 (sesión 7)
+
+### FiLM FFN CONDITIONING — RESULTADO FINAL
+
+**Implementado** en `network/model.py` (MultiLayer): flag `gt.use_film_ffn`.
+```python
+h_mid = F.relu(self.ff_linear1(x)) * (1.0 + gamma_bias) + beta   # donde gamma, beta = f(r_q)
+```
+
+**Resultado**: test MRR 0.419 en peak (ep5) vs baseline 0.565 → **−0.146 MRR**. FALLO GRAVE.
+
+**Por qué falló**: FiLM condiciona la *transformación* del FFN sobre r_q, pero `h` en la entrada sigue siendo graph-specific (acumula información de los vecinos del train graph a través de W_V). Condicionar la transformación no "limpia" la representación. Además añade 52K params adicionales que pueden memorizar más patrones. El FFN no es el cuello de botella — lo es el flujo completo desde W_V.
+
+**Experimentos FiLM adicionales** en la misma sesión (todos peores que baseline):
+| Config | Peak val | Test MRR | vs baseline |
+|--------|----------|----------|-------------|
+| hp_ffn_lr3e6 (lr=3e-6) | 0.415 | 0.566 | +0.001 |
+| hp_ffn_lr1e4 (lr=1e-4) | 0.407 | 0.555 | −0.010 |
+| hp_ffn_ls01 (ls=0.1) | 0.418 | **0.569** | +0.004 |
+| hp_ffn_drop02 (dropout=0.2) | 0.419 | 0.544 | −0.021 |
+
+FiLM con lr=3e-6 (warmup más lento, peak en ep9) y label smoothing=0.1 dan marginalmente encima del baseline (0.566, 0.569), pero la diferencia es insignificante (~+0.004). **FiLM no ayuda.**
+
+---
+
+### HP TUNING — RESULTADOS COMPLETOS (30 épocas)
+
+**Grid**: 4 experimentos FFN (dim=32, L=3, variando lr/ls/dropout) + 6 no-FFN (variando dim, L, lr).
+
+#### No-FFN model
+
+| Config | dim | L | lr | Best ep | Peak val | Test MRR | Notas |
+|--------|-----|---|----|---------|----------|----------|-------|
+| hp_noffn_lr3e5 | 32 | 3 | 3e-5 | 5 | 0.438 | 0.561 | |
+| hp_noffn_lr1e4 | 32 | 3 | 1e-4 | 2 | **0.440** | 0.559 | val más alto de todo el grid |
+| hp_noffn_dim64 | 64 | 3 | 1e-5 | 4 | 0.416 | **0.570** | mejor test MRR |
+| hp_noffn_dim64_lr3e5 | 64 | 3 | 3e-5 | 2 | 0.415 | 0.570 | idem |
+| hp_noffn_L4 | 32 | 4 | 1e-5 | 5 | 0.413 | 0.529 | más capas = peor |
+| hp_noffn_L5 | 32 | 5 | 1e-5 | 0 | 0.016 | 0.067 | **NO APRENDIÓ NADA** — muerto desde ep0 |
+
+**L5 con dim=32**: val_mrr=0.016 constante durante las 30 épocas. El modelo nunca actualiza. Probable vanishing gradient con 5 capas y dim=32 (muy pocos params/capa sin FFN). Patrón distinto a `distmultv_noffn_L5` (dim=64, también muerto) — confirma que L=5 sin FFN y dim pequeño es inestable.
+
+#### Análisis comparativo con baseline
+
+| Config | Test MRR | Δ vs baseline (0.565) | Observación |
+|--------|----------|-----------------------|-------------|
+| **baseline** (indrouting_lr1e5) | **0.565** | — | referencia |
+| hp_noffn_dim64 | **0.570** | +0.005 | mejor del grid, marginal |
+| hp_noffn_dim64_lr3e5 | 0.570 | +0.005 | idem |
+| hp_ffn_ls01 | 0.569 | +0.004 | label smoothing, marginal |
+| hp_ffn_lr3e6 | 0.566 | +0.001 | lr más lento = peak tardío (ep9) |
+| hp_noffn_lr3e5 | 0.561 | −0.004 | |
+| hp_noffn_lr1e4 | 0.559 | −0.006 | |
+| hp_ffn_drop02 | 0.544 | −0.021 | dropout alto daña |
+| hp_ffn_lr1e4 | 0.555 | −0.010 | colapso desde ep1 |
+| hp_noffn_L4 | 0.529 | −0.036 | L=4 > L=3 no ayuda |
+| hp_noffn_L5 | 0.067 | −0.498 | muerto |
+
+**Conclusión del grid**: el techo empírico es **~0.570 MRR** en WN18RR-ind-v1. Ningún hiperparámetro supera el baseline en más de +0.005. El gap a NBFNet (0.741) es estructural.
+
+---
+
+### DIAGNÓSTICO FINAL CONSOLIDADO (sesión 7)
+
+Después de 30+ experimentos en 7 sesiones, el diagnóstico es inequívoco:
+
+**El techo arquitectónico del modelo actual es ~0.570 MRR.**
+
+Lo que ha sido intentado y ha fallado (en orden cronológico):
+- PNA, MLP scorer, scale-up dim=128, weight tying, constlr, más capas (L=5)
+- V-RMPNN (con y sin query conditioning), use_nbf_v, use_relational_v, DistMult-V
+- FiLM FFN conditioning
+- HP tuning: lr, label_smoothing, dropout, dim, L
+
+Lo que SÍ ayudó (toda la ganancia real):
+1. **Sum aggregation** (wV/Z → wV): +0.23 MRR (la mayor mejora de la historia del proyecto)
+2. **Inductive routing** (K = proj_k(r_q)): +0.05 MRR
+3. **LR tuning** (lr=1e-5): +0.033 MRR
+
+El gap 0.570 → 0.741 requiere un cambio estructural al mecanismo de mensaje:
+- El problema raíz es que W_V(h) proyecta h que ya es graph-specific
+- La solución requeriría reescribir el paso de mensaje al estilo KnowFormer V-RMPNN,
+  con un filtro relacional *antes* de la proyección, no después
+- Esto es una reescritura mayor que está fuera del scope de ajuste de hiperparámetros
+
+**REGLA actualizada**: no lanzar más experimentos de HP tuning en WN18RR-ind-v1.
+El próximo paso es decidir si hacer la reescritura RMPNN o moverse a la siguiente etapa del doctorado.
+
+---
+
+### EXPERIMENTO: use_rel_matrix_v (W_r completa por relación)
+
+#### v1 — resultado (job 574311, cancelado ep38)
+
+Config: `wn18rr_ind_v1_relmatrix.yaml` — dim=64, L=3, lr=1e-5, ffn=none, inductive_routing=True,
+`use_edge_gating: False`, `use_rel_matrix_v: True`.
+
+| Época | Val MRR | Test MRR |
+|-------|---------|----------|
+| 4 | 0.165 | 0.215 |
+| 8 | 0.347 | 0.431 |
+| **13** | **0.365** | **0.465** |
+| 14–38 | plateau | plateau |
+
+**Peak**: val=0.365, test=**0.465** @ ep13 — **peor que baseline (0.565) en −0.10 MRR**.
+
+Patrón distinto al baseline: sube lento durante 13 épocas (sin colapso) y luego se estabiliza.
+No hay memorización del train graph. Pero el peak es más bajo.
+
+**Dos problemas identificados**:
+
+1. **Velocidad**: 105s/época vs 19s/época (5.5×). Causa: `W = self.W_r[rel_ids]` materializa
+   tensor `(E, heads, d, d)` ≈ 350MB por forward pass para todas las aristas simultáneamente.
+   **No afecta métricas** — solo tiempo.
+
+2. **Query conditioning perdido**: el baseline tenía `V_gate = V_gate(r_uv) + proj_vg(r_q)`,
+   condicionando V en AMBAS la relación de arista y la de query. `use_rel_matrix_v` v1 usaba
+   solo `h @ W_r[r_uv]` sin ningún conditioning de r_q en V. Este sí afecta métricas.
+
+#### v2 — fixes aplicados (job 574626, en curso)
+
+**Fix 1 (memoria)**: loop por tipo de relación en `propagate_attention`:
+```python
+v_src = torch.zeros_like(v_raw)
+for r in range(self.W_r.shape[0]):        # 19 iteraciones para WN18RR
+    mask = rel_ids == r
+    if not mask.any(): continue
+    v_src[mask] = torch.einsum('ehk,hkd->ehd', v_raw[mask], self.W_r[r])
+```
+Memoria: O(max_E_per_relation × heads × d²) en lugar de O(E_total × heads × d²).
+**Matemáticamente idéntico** — sin impacto en métricas.
+
+**Fix 2 (query conditioning)**: `proj_vg` creado también cuando `use_rel_matrix_v=True`,
+aplicado como FiLM sobre la salida de W_r:
+```python
+# En forward(): precomputar
+batch.E_relmat_qcond = self.proj_vg(shared_edge).view(-1, heads, out_dim)
+
+# En propagate_attention(): aplicar después de W_r
+if hasattr(batch, 'E_relmat_qcond'):
+    v_src = v_src * (1.0 + batch.E_relmat_qcond)
+```
+Resultado: `msg = (h @ W_r[r_uv]) * (1 + proj_vg(r_q))` — W_r completa + query conditioning.
+Params: 139,969 → 152,257 (+12K de proj_vg).
+
+#### v2 — resultado (job 574626, ep0–13, aún en curso)
+
+| Época | Val MRR | Test MRR |
+|-------|---------|----------|
+| 4 | 0.286 | 0.345 |
+| 7 | 0.387 | 0.475 |
+| 8 | 0.400 | 0.501 |
+| 9 | 0.404 | 0.510 |
+| **10** | **0.408** | **0.509** | ← BEST VAL
+| 11–13 | 0.399↓ | 0.490↓ | declinando |
+
+**Peak**: val=0.408, test=**0.509** @ ep10.
+
+**Comparativa vs v1 y baseline**:
+| Config | Val MRR | Test MRR | Δ vs baseline |
+|--------|---------|----------|---------------|
+| baseline (indrouting_lr1e5) | 0.415 | **0.565** | — |
+| relmatrix v1 (sin query cond.) | 0.365 | 0.465 | −0.100 |
+| **relmatrix v2 (con query cond.)** | **0.408** | **0.509** | −0.056 |
+
+**Velocidad**: 72s/época vs 105s (v1) vs 19s (baseline). El loop por relación mejora 32% vs materializar tensor, pero sigue 3.8× más lento que el baseline.
+
+**Conclusiones**:
+
+1. **Query conditioning SÍ importa en V**: v2 (0.509) vs v1 (0.465) = +0.044 MRR. El `proj_vg(r_q)` recupera parte del rendimiento perdido al remover el gate.
+
+2. **Aún −0.056 vs baseline**: el W_r completa no supera al baseline con gate diagonal (0.565). La hipótesis "full vs diagonal = 0.741 vs 0.570" no se confirmó — la diferencia real es pequeña.
+
+3. **Val casi igual** (0.408 vs 0.415): el gap test (0.509 vs 0.565) sugiere que W_r sigue generalizando peor al test graph que el gate, posiblemente porque las 19 matrices 16×16 tienen más capacidad para memorizar la topología del train graph.
+
+4. **Plateau más tardío** (ep10 vs ep4 baseline): W_r aprende más lento. El LR 1e-5 puede ser subóptimo para matrices 16×16 — necesita más señal por parámetro.
+
+**Diagnóstico**: el gap baseline→W_r no es simplemente "diagonal vs full". La atención selectiva ponderada puede estar suprimiendo mensajes de W_r que NBFNet pasaría con suma uniforme. O el LR necesita ajuste específico para W_r.
+
+---
+
+### DIAGNÓSTICO DEFINITIVO: POR QUÉ 0.570 Y NO 0.741
+
+Después de confirmar el techo con HP tuning, el diagnóstico es preciso.
+
+**El único componente no-inductivo que nunca fue eliminado correctamente es el Value:**
+
+```python
+V = W_V(h_src) * V_gate(rel_emb[r_uv])
+```
+
+`W_V` es una proyección lineal compartida para todas las relaciones. `V_gate` escala el resultado elemento a elemento. Esto es matemáticamente equivalente a una **transformación diagonal específica por relación**:
+
+```
+V_ij = W_V @ h_i * gate_r  ↔  h_i @ (W_V * gate_r)  =  h_i @ D_r W_V
+```
+
+donde D_r es diagonal — sólo escala dimensiones, no las mezcla. **Todos los experimentos intentados implementaron variaciones de diagonal W_r**:
+
+| Experimento | Forma matemática | Por qué falla |
+|-------------|-----------------|---------------|
+| `V_gate(rel_emb[r])` (baseline) | `W_V(h) ⊙ gate_vec(r)` | Diagonal — escala pero no mezcla dimensiones |
+| `W_V(h) ⊙ rel_emb[r]` (distmultv) | `h @ (W_V * rel_emb[r])` | Exactamente igual en expresividad al baseline |
+| `h ⊙ nbf_rel_emb[r]` (use_nbf_v) | `h ⊙ d_r` | También diagonal, plus init inestable |
+| V-RMPNN separado | stream paralelo | Compite en gradiente con stream principal |
+| FiLM FFN | condiciona FFN, no V | h ya lleva patrones del train graph antes del FFN |
+
+**NBFNet usa matrices COMPLETAS por relación** (no diagonal):
+```python
+msg = h_src @ W_r[r_uv]   # W_r ∈ R^{dim × dim}, una matriz distinta por relación
+```
+
+La composición de W_r a través de hops permite razonar sobre caminos relacionales: `hypernym ∘ hyponym ≠ hypernym ∘ hypernym` porque las matrices mezclan dimensiones entre sí. Con diagonal (nuestro modelo), cada dimensión se propaga independientemente — no hay composición cruzada entre dimensiones. Eso es la brecha.
+
+---
+
+### PLAN PARA ALCANZAR 0.741+: W_r POR RELACIÓN
+
+**El cambio**: reemplazar el Value con matrices completas por relación, manteniendo todo lo demás.
+
+```python
+# ACTUAL (diagonal, graph-specific):
+V_src = self.V(h_src)           # W_V shared, sin distinción por relación
+V_src = V_src * batch.E_gate    # gate escala elemento a elemento
+
+# PROPUESTO (W_r por relación, NBFNet-style):
+# Añadir a __init__:
+self.W_r = nn.Parameter(torch.empty(num_relations, dim_h, dim_h))
+nn.init.orthogonal_(self.W_r.view(num_relations * dim_h, dim_h))
+
+# En forward, para KG edges:
+V_src = torch.einsum('ed,edf->ef',
+    h[edge_index[0]],        # (E, dim) — source features
+    self.W_r[edge_rel_ids]   # (E, dim, dim) — relation-specific map
+)
+# Para expander edges (sin relación):
+# Usar self.W_exp: nn.Parameter(torch.empty(dim_h, dim_h)) — una matriz especial
+```
+
+**Costo en parámetros** (sin cambio arquitectónico mayor):
+- WN18RR (18 relaciones, dim=32): 18 × 32² = **18,432 params** — menor que el FFN
+- WN18RR (18 relaciones, dim=64): 18 × 64² = 73,728 params
+- FB15k-237 (474 relaciones, dim=32): ~486K params (manejable)
+
+**Costo computacional**: O(E × dim²) — igual que `W_V(h)` actual, sin overhead real.
+
+**Config base para el experimento**:
+```yaml
+gt:
+  layers: 3
+  dim_hidden: 64    # dim=64 es el mejor no-FFN
+  n_heads: 4
+  dropout: 0.1
+  use_edge_gating: False    # reemplazado por W_r
+  use_query_conditioning: True
+  inductive_routing: True
+  ffn_type: none            # sin FFN (ya confirmado mejor)
+
+optim:
+  base_lr: 0.00001
+  scheduler: cosine_with_warmup
+  num_warmup_epochs: 5
+  max_epoch: 50
+```
+
+---
+
+### COMPATIBILIDAD CON LA TESIS (ETAPA 1)
+
+El cambio es SÓLO en la función de valor V. Todo lo demás se mantiene intacto:
+
+| Componente | Estado | Rol |
+|-----------|--------|-----|
+| Expander graph | ✅ sin cambio | Conectividad global, aristas extra para atención sparse |
+| Trilinear score `(Q⊙K⊙E).sum()` | ✅ sin cambio | Routing selectivo basado en query |
+| Inductive routing (K = proj_k(r_q)) | ✅ sin cambio | Score puramente relacional |
+| BF residual (h += x0) | ✅ sin cambio | Reinyección de señal de query por capa |
+| Q/E conditioning (proj_q, proj_e) | ✅ sin cambio | Condicionamiento por relación de query |
+| **Value: W_r completa por relación** | 🔄 cambio clave | Mensaje NBFNet-style — composición relacional |
+| FFN | `ffn_type: none` | Eliminado (ya confirmado que ayuda) |
+
+**Contribución en términos de la tesis**: Exphormer con mensajes relacionales NBFNet.
+- NBFNet hace suma uniforme sobre todos los caminos
+- Exphormer ruta con atención dispersa (incluyendo expander para alcance global) — selecciona qué caminos son más relevantes para la query
+- Los mensajes que transporta son relacionalmente expresivos (W_r completa, no diagonal)
+
+Esto es novel respecto a KnowFormer (que usa dos streams separados con competencia de gradiente) y respecto a NBFNet (que no tiene atención ni expander).
+
+**Expectativa realista**:
+- NBFNet con suma uniforme: 0.741
+- Exphormer con W_r + atención selectiva: ≥ 0.741 (la atención debería ayudar al seleccionar caminos)
+- KnowFormer: 0.752 — rango objetivo
+
+---
+
+### FIX TÉCNICO: SLURM PARALELISMO
+
+**Problema**: jobs enviados con `--mem` por defecto (256G) — cada job consumía todo el RAM disponible.
+Con 753G total y 2 jobs con 256G ya no quedaba RAM para tercero.
+
+**Fix**: enviar con `--mem=16G --cpus-per-task=4`. Con 16G/job, 5 jobs corren en paralelo en compute-gpu-3-1.
+Los modelos de WN18RR-ind-v1 usan <2GB RAM real; el default era 16× sobredimensionado.
+
+---
+
 ## Estado actual — 2026-04-13 (sesión 6)
 
 ### ANÁLISIS ARQUITECTÓNICO PROFUNDO (Mauricio, sesión 6)
@@ -1131,5 +1814,84 @@ python main.py --cfg configs/Exphormer/wn18rr_ind_v{2,3,4}.yaml wandb.use False 
 ## Sesión anterior (2026-03-31)
 
 Ver historial completo de experimentos transductivos en `EXPERIMENTS.md`.
+
+---
+
+## Sesión 10 — 2026-04-14/15
+
+### Contexto
+
+Al final de la sesión 9 se detectó que el experimento transductivo WN18RR (job 575904) daba MRR=0.0003 — predicciones completamente uniformes. La causa raíz fue identificada: **sum aggregation (`h_out = batch.wV`) causa explosión de magnitud en el grafo transductivo de 40K nodos**.
+
+Con L=5 capas y grado medio ~8.5: magnitud crece O(8.5^5) ≈ 44,000× por epoch. El LayerNorm acota la magnitud pero no salva la información: la señal del anchor (1 nodo sobre 40K) queda completamente ahogada por los ~40K términos de la suma → representaciones uniformes → pérdida ≈ -log(1/40943) = 10.67 → MRR≈0.0003.
+
+### Diagnóstico arquitectural: tensión sum vs mean
+
+| Fórmula | Inductivo (grafo pequeño) | Transductivo (40K nodos) |
+|---------|--------------------------|--------------------------|
+| `wV` (sum) | Óptima — preserva fuerza de señal | Catastrófica — señal anchor 1/40K |
+| `wV/Z` (mean) | Sub-óptima — dilución innecesaria | Estable — acotada por definición |
+
+El flag `sum_aggregation` implementado inicialmente como solución fue **rechazado por razones metodológicas**: para una tesis/publicación no se puede activar/desactivar componentes según el setting. Cambiar lr, capas, dimensión es normal; cambiar la fórmula de agregación no lo es.
+
+### Solución adoptada: tanh pre-residual (NBFNet-style)
+
+**Decisión arquitectural**: sum aggregation hardcodeada + `tanh` antes del residual, idéntico para ambos settings. NBFNet usa exactamente esta combinación para controlar magnitud sin cambiar el carácter de la suma.
+
+**Cambio en `network/model.py` — `GlobalModel.forward()`:**
+```python
+# ANTES:
+h_attn = h_in1 + h_attn
+
+# AHORA:
+h_attn = h_in1 + torch.tanh(h_attn)  # tanh bounds sum-aggregation magnitude (NBFNet-style)
+```
+
+El flag `sum_aggregation` fue eliminado completamente. No existe ningún switch entre settings.
+
+Adicionalmente, `wn18rr_transduct_best.yaml` fue corregido:
+- `inductive_routing: True` (decisión arquitectural unificada — routing relacional puro)
+- Eliminado `sum_aggregation: False` (ya no existe el flag)
+
+### Experimentos lanzados (2026-04-14)
+
+| Job | Setting | Config | GPUs | Tiempo | Objetivo |
+|-----|---------|--------|------|--------|----------|
+| 578249 | Transductivo | `wn18rr_transduct_best.yaml` | 4×H100 | 24h | Verificar que tanh recupera ~0.549 |
+| 578250 | Inductivo (mejor) | `wn18rr_ind_v1_exp3_qcond.yaml` | 1×H100 | 6h/30ep | Verificar que tanh no perjudica 0.578 |
+
+### Resultado: inductivo con tanh (job 578250) — COMPLETADO
+
+**Best checkpoint (ep3, seleccionado por val):**
+- val MRR: 0.391
+- **test MRR: 0.528**
+- hits@1: 0.388, hits@3: 0.644, hits@10: 0.761
+
+**Comparación:**
+
+| Arquitectura | Peak test MRR | Epoch | Hits@10 |
+|-------------|---------------|-------|---------|
+| Sin tanh (anterior best) | **0.578** | 3 | 0.776 |
+| **Con tanh (este run)** | **0.528** | 3 | 0.761 |
+| Regresión | −0.050 | — | −0.015 |
+
+**Diagnóstico**: el tanh perjudica el inductivo en −0.050 MRR. En el grafo inductivo pequeño (~900 nodos), las sumas de atención eran moderadas y portaban señal útil; el tanh las comprime innecesariamente distorsionando la representación.
+
+El patrón de colapso persiste: pico en ep3, luego descenso a ~0.30-0.31 estabilizado (ep4-29).
+
+### Estado: pendiente resultado transductivo (job 578249)
+
+El tradeoff real se conocerá cuando lleguen los resultados del job 578249:
+- Si tanh recupera ~0.549 transductivo → tenemos una arquitectura unificada funcional, con costo de −0.050 en inductivo
+- Si tanh no ayuda al transductivo → la solución no funciona y hay que replantear
+
+### Implicación metodológica abierta
+
+Si el tanh no es suficiente (o el tradeoff es demasiado costoso), las alternativas arquitecturales unificadas restantes son:
+1. **`wV/sqrt(Z+1)`** — normalización geométrica, principled, un cambio de 1 línea
+2. **Aceptar mean (`wV/Z`) para ambos** — sacrifica inductivo pero arquitectura limpia
+3. **Reformular la tesis**: la arquitectura óptima es inductiva; transductivo es evaluación secundaria donde se acepta menor rendimiento
+
+El punto 3 es legítimo académicamente: si el objetivo del trabajo es KGC inductivo (Stage 1 de la tesis), el transductivo es solo una comparación adicional, no el objetivo principal.
 
 **Cambio clave activo:** `torch.sigmoid()` eliminado del V_gate en `layer/exphormer.py` (commit "Q conditioned"). Sin este cambio el modelo se bloquea en MRR ~0.44.

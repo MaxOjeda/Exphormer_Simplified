@@ -19,12 +19,12 @@ kgc:
   eval_batch_size: 32
   train_full_graph: True
   train_batch_size: 8
-  train_steps_per_epoch: 497    # ceil(10820 / (4 GPUs * 8)) ≈ 100% coverage
+  train_steps_per_epoch: 1985   # ceil(7940 * 2 / 8) = 100% coverage, 1 GPU
   label_smoothing: 0.0
 
 gt:
   layer_type: Exphormer
-  layers: 5
+  layers: 3
   n_heads: 4
   dim_hidden: 64
   dim_edge: 64
@@ -34,6 +34,11 @@ gt:
   batch_norm: False
   use_edge_gating: True
   use_query_conditioning: True
+  gate_rel_mult: False
+  use_alpha_mix_qk: False
+  tie_rel_emb: False
+  inductive_routing: True
+  ffn_type: none
 
 gnn:
   head: kgc
@@ -58,11 +63,11 @@ posenc_EquivStableLapPE:
 
 optim:
   optimizer: adamW
-  base_lr: 0.0008
+  base_lr: 0.00001
   weight_decay: 1.0e-4
   max_epoch: 30
   scheduler: cosine_with_warmup
-  num_warmup_epochs: 3
+  num_warmup_epochs: 5
   clip_grad_norm: True
 
 train:
@@ -71,6 +76,7 @@ train:
   ckpt_period: 10
   enable_ckpt: True
   ckpt_best: True
+  ckpt_monitor_split: val
   grad_checkpoint: False
 
 model:

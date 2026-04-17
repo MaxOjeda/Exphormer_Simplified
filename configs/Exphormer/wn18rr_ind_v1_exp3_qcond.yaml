@@ -1,6 +1,6 @@
 dataset:
   format: KGC
-  name: WN18RR-ind-v3
+  name: WN18RR-ind-v1
   dir: ./datasets
   task: link_pred
   task_type: kgc_ranking
@@ -19,7 +19,7 @@ kgc:
   eval_batch_size: 32
   train_full_graph: True
   train_batch_size: 8
-  train_steps_per_epoch: 6476   # ceil(25901 * 2 / 8) = 100% coverage, 1 GPU
+  train_steps_per_epoch: 1353
   label_smoothing: 0.0
 
 gt:

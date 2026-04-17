@@ -31,8 +31,15 @@ class ExpanderEdgeFixer(nn.Module):
         # expander edges get sentinel index num_relations (near-zero init row).
         self.num_relations = num_relations
 
-        # Learnable embedding for expander edges (single embedding shared)
+        # Learnable embedding for expander edges — uniform fallback (non-KGC or no query).
         self.exp_edge_attr = nn.Embedding(1, dim_edge)
+        # Query-conditioned expander features (KGC mode): one embedding per relation.
+        # When batch.query_relation is present, expander edges carry the query signal
+        # instead of a uniform feature, turning them into "query propagation highways".
+        # Enabled automatically when num_relations is set (KGC mode).
+        if num_relations is not None:
+            self.exp_edge_query_emb = nn.Embedding(num_relations, dim_edge)
+            nn.init.normal_(self.exp_edge_query_emb.weight, std=0.01)
         # NOTE: use_exp_edges / prep.exp are handled upstream before this module
         # is called; the presence of batch.expander_edges signals to use them.
 
@@ -40,6 +47,24 @@ class ExpanderEdgeFixer(nn.Module):
             self.virt_node_emb = nn.Embedding(self.num_virt_node, dim_hidden)
             self.virt_edge_out_emb = nn.Embedding(self.num_virt_node, dim_edge)
             self.virt_edge_in_emb = nn.Embedding(self.num_virt_node, dim_edge)
+
+    def _exp_attr(self, exp_ei, batch, device):
+        """Return edge features for expander edges (E_exp, dim_edge).
+
+        KGC mode (batch.query_relation available + self.exp_edge_query_emb exists):
+            Each expander edge gets the query-relation embedding of its graph.
+            Expander edges become query-conditioned propagation highways.
+        Fallback (non-KGC or no query):
+            Uniform learnable feature shared by all expander edges.
+        """
+        if hasattr(self, 'exp_edge_query_emb') and hasattr(batch, 'query_relation'):
+            src = exp_ei[0].clamp(max=batch.batch.shape[0] - 1).long()
+            graph_idx = batch.batch[src]                          # (E_exp,) graph index per edge
+            query_rel = batch.query_relation[graph_idx]           # (E_exp,) relation idx per edge
+            return self.exp_edge_query_emb(query_rel)             # (E_exp, dim_edge)
+        return self.exp_edge_attr(
+            torch.zeros(exp_ei.shape[1], dtype=torch.long, device=device)
+        )
 
     def forward(self, batch):
         device = self.exp_edge_attr.weight.device
@@ -65,11 +90,7 @@ class ExpanderEdgeFixer(nn.Module):
             # (2, B*E_exp). Consumed here; overwritten with combined result below.
             exp_ei = batch.expander_edge_index
             edge_index_sets.append(exp_ei)
-            edge_attr_sets.append(
-                self.exp_edge_attr(
-                    torch.zeros(exp_ei.shape[1], dtype=torch.long, device=device)
-                )
-            )
+            edge_attr_sets.append(self._exp_attr(exp_ei, batch, device))
             if self.num_relations is not None:
                 # Expander edges get the sentinel index (num_relations row ≈ near-zero).
                 rel_idx_sets.append(
@@ -86,11 +107,7 @@ class ExpanderEdgeFixer(nn.Module):
                 cumulative += data.num_nodes
             exp_edges = torch.cat(exp_edges, dim=0).t()  # (2, E_exp)
             edge_index_sets.append(exp_edges)
-            edge_attr_sets.append(
-                self.exp_edge_attr(
-                    torch.zeros(exp_edges.shape[1], dtype=torch.long, device=device)
-                )
-            )
+            edge_attr_sets.append(self._exp_attr(exp_edges, batch, device))
             if self.num_relations is not None:
                 rel_idx_sets.append(
                     torch.full((exp_edges.shape[1],), self.num_relations,

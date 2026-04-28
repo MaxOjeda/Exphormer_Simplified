@@ -195,41 +195,23 @@ class LapPENodeEncoder(nn.Module):
 
 class KGCNodeEncoder(nn.Module):
     """
-    Query-conditioned initialization for Knowledge Graph Completion.
-
-    Implements the NBFNet boundary condition for each query (h, r, ?):
-        x_v = 0       for all v != h  (zero initialization)
-        x_h = e_r     relation embedding of the query relation r
-
-    There are no entity-specific parameters. The model reasons entirely
-    through graph structure, propagating the query signal from the anchor.
+    Query-conditioned initialization for KGC (NBFNet boundary condition).
+    Reads batch.query_emb set by MultiModel — no own embedding table.
 
     Args:
-        num_relations (int): Number of relation types (base + inverse).
-        dim_emb (int): Output embedding dimension (= gt.dim_hidden).
+        dim_emb (int):    Output embedding dimension (= gt.dim_hidden).
     """
 
-    def __init__(self, num_relations: int, dim_emb: int):
+    def __init__(self, dim_emb: int):
         super().__init__()
-        self.rel_emb = nn.Embedding(num_relations, dim_emb)
         self.dim_emb = dim_emb
 
     def forward(self, batch):
-        N = batch.x.shape[0]    # total nodes across all graphs in the batch
+        N = batch.x.shape[0]
         device = batch.x.device
-
-        # Initialize all nodes to zero
         h = torch.zeros(N, self.dim_emb, device=device)
-
-        # Global index of each anchor node in the concatenated batch:
-        #   batch.ptr[:-1]   = start offset of each graph in the batch  (B,)
-        #   batch.anchor_idx = local index of anchor within each graph  (B,)
-        anchor_global = batch.ptr[:-1] + batch.anchor_idx   # (B,)
-
-        # Inject query relation embedding into each anchor node
-        r_emb = self.rel_emb(batch.query_relation)           # (B, dim_emb)
-        h[anchor_global] = r_emb
-
+        anchor_global = batch.ptr[:-1] + batch.anchor_idx
+        h[anchor_global] = batch.query_emb  # (B, d) from MultiModel.query_rel_emb
         batch.x = h
         return batch
 
@@ -247,10 +229,7 @@ def build_node_encoder(cfg, dim_in):
     dim_h = cfg.gnn.dim_inner
 
     if name == 'KGCNode':
-        return KGCNodeEncoder(
-            num_relations=cfg.dataset.num_relations,
-            dim_emb=dim_h,
-        )
+        return KGCNodeEncoder(dim_emb=dim_h)
 
     elif name == 'LinearNode':
         return LinearNodeEncoder(dim_in, dim_h)

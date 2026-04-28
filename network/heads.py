@@ -89,12 +89,10 @@ class KGCHead(nn.Module):
     entities -- no padding, every slot is valid.
     """
 
-    def __init__(self, dim_in: int, num_relations: int, dropout: float = 0.0,
+    def __init__(self, dim_in: int, dropout: float = 0.0,
                  mlp_scorer: bool = False):
         super().__init__()
-        self.rel_emb = nn.Embedding(num_relations, dim_in)
         if mlp_scorer:
-            # KnowFormer-style: cat(h_v, r_q) → Linear → ReLU → Linear → score
             self.scorer = nn.Sequential(
                 nn.Linear(dim_in * 2, dim_in),
                 nn.ReLU(),
@@ -105,11 +103,11 @@ class KGCHead(nn.Module):
         self.drop = nn.Dropout(dropout)
 
     def forward(self, batch):
-        h = self.drop(batch.x)                       # (N_total, dim_in)
-        r_emb = self.rel_emb(batch.query_relation)   # (B, dim_in)
-        r_per_node = r_emb[batch.batch]              # (N_total, dim_in)
-        h = torch.cat([h, r_per_node], dim=-1)       # (N_total, 2*dim_in)
-        scores = self.scorer(h).squeeze(-1)          # (N_total,)
+        h = self.drop(batch.x)              # (N_total, dim_in)
+        r_emb = batch.query_emb            # (B, dim_in) from MultiModel.query_rel_emb
+        r_per_node = r_emb[batch.batch]    # (N_total, dim_in)
+        h = torch.cat([h, r_per_node], dim=-1)            # (N_total, 2*dim_in)
+        scores = self.scorer(h).squeeze(-1)               # (N_total,)
 
         ptr = batch.ptr                              # (B+1,)
         B = int(ptr.shape[0]) - 1
@@ -130,7 +128,7 @@ def build_head(cfg, dim_in, dim_out):
     """Factory: return the appropriate head."""
     head_name = cfg.gnn.head
     if head_name == 'kgc':
-        return KGCHead(dim_in=dim_in, num_relations=cfg.dataset.num_relations,
+        return KGCHead(dim_in=dim_in,
                        dropout=cfg.gnn.dropout,
                        mlp_scorer=getattr(cfg.kgc, 'mlp_scorer', False))
     elif head_name == 'default':

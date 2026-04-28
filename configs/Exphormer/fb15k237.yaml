@@ -33,7 +33,6 @@ gt:
   attn_dropout: 0.1
   layer_norm: True
   batch_norm: False
-  use_edge_gating: True            # relation-conditioned V gate on values
   use_query_conditioning: True     # condition attention scores on query relation r
 
 gnn:

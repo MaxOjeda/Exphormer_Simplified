@@ -32,14 +32,8 @@ gt:
   attn_dropout: 0.1
   layer_norm: True
   batch_norm: False
-  use_edge_gating: True
   use_query_conditioning: True
-  gate_rel_mult: False
-  use_alpha_mix_qk: False
-  tie_rel_emb: False
-  inductive_routing: True
-  use_vrmpnn: True
-  vrmpnn_layers: 2
+  qk_noise_std: 4.0
 
 gnn:
   head: kgc
@@ -64,7 +58,7 @@ posenc_EquivStableLapPE:
 
 optim:
   optimizer: adamW
-  base_lr: 0.00001
+  base_lr: 3e-5
   weight_decay: 1.0e-4
   max_epoch: 50
   scheduler: cosine_with_warmup
@@ -77,7 +71,7 @@ train:
   ckpt_period: 10
   enable_ckpt: True
   ckpt_best: True
-  ckpt_monitor_split: test
+  ckpt_monitor_split: val
   grad_checkpoint: False
 
 model:

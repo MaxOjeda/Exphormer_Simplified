@@ -1,6 +1,6 @@
 dataset:
   format: KGC
-  name: WN18RR-ind-v1
+  name: WN18RR
   dir: ./datasets
   task: link_pred
   task_type: kgc_ranking
@@ -16,15 +16,15 @@ kgc:
   subgraph_hops: 2
   max_nodes: 500
   eval_full_graph: True
-  eval_batch_size: 32
+  eval_batch_size: 8
   train_full_graph: True
-  train_batch_size: 8
-  train_steps_per_epoch: 1353
+  train_batch_size: 16
+  train_steps_per_epoch: 10854
   label_smoothing: 0.0
 
 gt:
   layer_type: Exphormer
-  layers: 3
+  layers: 5
   n_heads: 4
   dim_hidden: 64
   dim_edge: 64
@@ -32,13 +32,7 @@ gt:
   attn_dropout: 0.1
   layer_norm: True
   batch_norm: False
-  use_edge_gating: True
-  use_query_conditioning: True
-  ffn_type: none
-  gate_rel_mult: False
-  use_alpha_mix_qk: False
-  tie_rel_emb: False
-  inductive_routing: True
+  use_query_conditioning: False
 
 gnn:
   head: kgc
@@ -48,7 +42,7 @@ gnn:
   dropout: 0.1
 
 prep:
-  exp: False
+  exp: True
   exp_deg: 3
   exp_algorithm: Random-d
   exp_max_num_iters: 100
@@ -63,9 +57,9 @@ posenc_EquivStableLapPE:
 
 optim:
   optimizer: adamW
-  base_lr: 0.00001
+  base_lr: 0.0008
   weight_decay: 1.0e-4
-  max_epoch: 50
+  max_epoch: 100
   scheduler: cosine_with_warmup
   num_warmup_epochs: 5
   clip_grad_norm: True
@@ -77,7 +71,7 @@ train:
   enable_ckpt: True
   ckpt_best: True
   ckpt_monitor_split: val
-  grad_checkpoint: False
+  grad_checkpoint: True
 
 model:
   type: MultiModel

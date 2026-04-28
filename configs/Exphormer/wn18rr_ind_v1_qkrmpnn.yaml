@@ -21,7 +21,6 @@ kgc:
   train_batch_size: 8
   train_steps_per_epoch: 1353
   label_smoothing: 0.0
-  mlp_scorer: True
 
 gt:
   layer_type: Exphormer
@@ -33,12 +32,9 @@ gt:
   attn_dropout: 0.1
   layer_norm: True
   batch_norm: False
-  use_edge_gating: True
   use_query_conditioning: True
-  gate_rel_mult: False
-  use_alpha_mix_qk: False
-  tie_rel_emb: False
-  inductive_routing: True
+  qk_noise_std: 1.0
+  num_qk_layers: 2
 
 gnn:
   head: kgc
@@ -48,7 +44,7 @@ gnn:
   dropout: 0.1
 
 prep:
-  exp: False
+  exp: True
   exp_deg: 3
   exp_algorithm: Random-d
   exp_max_num_iters: 100
@@ -63,7 +59,7 @@ posenc_EquivStableLapPE:
 
 optim:
   optimizer: adamW
-  base_lr: 0.00001
+  base_lr: 3e-5
   weight_decay: 1.0e-4
   max_epoch: 50
   scheduler: cosine_with_warmup

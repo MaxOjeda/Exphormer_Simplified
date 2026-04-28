@@ -65,20 +65,8 @@ cfg.gt.attn_dropout = 0.0
 cfg.gt.layer_norm = False
 cfg.gt.batch_norm = True
 cfg.gt.dim_edge = None             # None → will be set equal to dim_hidden
-cfg.gt.use_edge_gating = False          # relation-conditioned V gate in Exphormer attention
-cfg.gt.use_query_conditioning = False   # condition attention on query relation (KGC)
-cfg.gt.gate_rel_mult = False           # multiplicative gate: V_gate(r_e)*(1+proj_vg(rel[q])) vs additive
-cfg.gt.use_alpha_mix_qk = False        # learnable α-blend for Q/K: α*x0 + (1-α)*h per layer
-cfg.gt.tie_rel_emb = False             # tie KGCNodeEncoder.rel_emb weights with KGCHead.rel_emb
-cfg.gt.inductive_routing = False       # K_h = proj_k(shared_rel[r_q]) only — no W_K(h) — inductive routing
-cfg.gt.use_nbf_v = False               # DistMult-style V: msg = h_i ⊙ W_r (NBFNet-style, replaces W_V + V_gate)
-cfg.gt.use_vrmpnn = False              # V-RMPNN: KnowFormer-style anchor-conditioned NBFNet value stream
-cfg.gt.vrmpnn_layers = 2              # number of propagation layers in V-RMPNN
-cfg.gt.use_pna = False                 # PNA aggregation: concat(sum, mean, max) + proj (NBFNet §4)
-cfg.gt.use_distmult_v = False          # DistMult-inside-attn: msg = W_V(h_i) ⊙ W_r (keeps projection, removes gate)
-cfg.gt.use_rel_matrix_v = False        # Full relation-specific matrix: msg = h_i @ W_r[r_uv] — NBFNet-exact, no shared W_V
-cfg.gt.ffn_type = 'full'               # FFN variant: 'full' (2-layer MLP), 'single' (1-layer+ReLU), 'none' (skip)
-cfg.gt.use_film_ffn = False            # FiLM conditioning of FFN on query relation: relu(ff1(h))*(1+γ(r_q))+β(r_q)
+cfg.gt.use_query_conditioning = False   # enables KGC mode: Q/K/E conditioned on r_q + V gate(r_uv, r_q)
+cfg.gt.use_film_e = True                # FiLM conditioning on edge features: E *= (1 + proj_e(c_q))
 cfg.gt.pna_degrees = []
 cfg.gt.bigbird = CN()              # kept for compat but not used
 cfg.gt.bigbird.attention_type = 'block_sparse'

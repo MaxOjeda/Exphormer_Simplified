@@ -162,7 +162,7 @@ class GlobalModel(nn.Module):
 
     def __init__(self, dim_h, num_heads, dropout=0.0, attn_dropout=0.0,
                  layer_norm=False, batch_norm=True, exp_edges_cfg=None,
-                 use_query_conditioning=False, use_film_e=True):
+                 use_query_conditioning=False, num_relations=None):
         super().__init__()
         self.dim_h = dim_h
         self.layer_norm = layer_norm
@@ -174,7 +174,7 @@ class GlobalModel(nn.Module):
             use_bias=False,
             use_virt_nodes=use_virt,
             use_query_conditioning=use_query_conditioning,
-            use_film_e=use_film_e)
+            num_relations=num_relations)
 
         if layer_norm and batch_norm:
             raise ValueError("Cannot use both layer_norm and batch_norm.")
@@ -212,7 +212,7 @@ class MultiLayer(nn.Module):
     def __init__(self, dim_h, model_types, num_heads,
                  equivstable_pe=False, dropout=0.0, attn_dropout=0.0,
                  layer_norm=False, batch_norm=True, exp_edges_cfg=None,
-                 use_query_conditioning=False, use_film_e=True):
+                 use_query_conditioning=False, num_relations=None):
         super().__init__()
         self.dim_h = dim_h
         self.layer_norm = layer_norm
@@ -239,7 +239,7 @@ class MultiLayer(nn.Module):
                     layer_norm=layer_norm, batch_norm=batch_norm,
                     exp_edges_cfg=exp_edges_cfg,
                     use_query_conditioning=use_query_conditioning,
-                    use_film_e=use_film_e))
+                    num_relations=num_relations))
             elif layer_type in ('CustomGatedGCN', 'GCN', 'GINE', 'GAT'):
                 models.append(LocalModel(
                     dim_h=dim_h, local_gnn_type=layer_type,
@@ -303,7 +303,6 @@ class MultiModel(nn.Module):
         super().__init__()
 
         use_query_cond = getattr(cfg.gt, 'use_query_conditioning', False)
-        use_film_e     = getattr(cfg.gt, 'use_film_e', True)
 
         # Single canonical query-relation embedding (KGC mode only).
         # Looked up once per forward() → batch.query_emb (B, d).
@@ -332,6 +331,9 @@ class MultiModel(nn.Module):
 
         model_types = cfg.gt.layer_type.split('+')
 
+        # KGC mode: thread num_relations to ExphormerAttention for the bilinear gate (C2).
+        _layer_num_rel = cfg.dataset.num_relations if (use_query_cond and cfg.dataset.num_relations > 0) else None
+
         self.layers = nn.Sequential(*[
             MultiLayer(
                 dim_h=cfg.gt.dim_hidden,
@@ -344,7 +346,7 @@ class MultiModel(nn.Module):
                 batch_norm=cfg.gt.batch_norm,
                 exp_edges_cfg=cfg.prep,
                 use_query_conditioning=use_query_cond,
-                use_film_e=use_film_e)
+                num_relations=_layer_num_rel)
             for _ in range(cfg.gt.layers)
         ])
 

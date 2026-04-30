@@ -11,6 +11,294 @@
 
 ---
 
+## Estado actual — 2026-04-29 (sesión 24): C2 (gate bilinear) implementado, **falla aislado** — re-diagnóstico
+
+### Marco metodológico (cambio de proceso)
+
+Tras dos sesiones de parches (warmup, lr, label smoothing) sin cierre del gap inductivo, se hizo un análisis estructural completo cruzando QC-Exphormer con KnowFormer. El resultado quedó en `diagnostico_solucion_inductivo.md` como referencia permanente:
+
+**Regla estructural única**: una arquitectura inductiva-por-construcción no puede tener `Linear(h_acumulada)` en ningún path que defina ROUTING o GATING. Solo puede tener `Linear` sobre cantidades relacionales (x0, query_emb, edge_emb).
+
+Componentes que violan la regla en la arquitectura actual:
+- `K = W_K(h) + proj_k(q)` ❌ (memoriza routing de train)
+- `FFN(h)` ❌ (memoriza distribución de h en train)
+- `score = exp(Q*K*E)` ❌ (a través de K)
+
+Más: el gate `W_g(emb_uv) + proj_vg(q)` es aditivo → solo rango-1 en el cross `(r, q)`. KnowFormer usa bilinear vía `fc_z(q).reshape(R, d)[r]`.
+
+**Cuatro cambios propuestos** (todos justificados por la misma regla):
+- C1: K relacional pura (`K = K(x0) + proj_k(q)`)
+- C2: gate bilinear `M_q[r]` en lugar de aditivo
+- C3: pre-LayerNorm sobre V para acotar magnitud (estabilidad del decay)
+- C4: eliminar FFN o condicionalo por query (FiLM-FFN)
+
+### Implementación de C2
+
+Reemplazado en `layer/exphormer.py` el gate aditivo por bilinear:
+
+```python
+# C2 — Bilinear V gate.
+# gate(r, q) = gate_base[r] + M_q[r], with M_q = fc_zq(query_emb).view(R+1, d_out).
+# Indexed by batch.edge_rel_idx (sentinel = num_relations for expander edges).
+gate_base : nn.Parameter (R+1, d_out), std=1.0   # per-relation baseline
+fc_zq     : Linear(d_in, (R+1)*d_out), std=0.01  # query-modulated cross-term
+```
+
+Threading `cfg.dataset.num_relations` desde MultiModel → MultiLayer → GlobalModel → ExphormerAttention. Asserts: incompatible con `use_virt_nodes=True`. Optimización: `M_q.view(-1, d_out)` + `index_select(0, flat_idx)` con `flat_idx = edge_graph * (R+1) + edge_rel` (1D scatter en backward, 12× más rápido que indexing 2D fancy).
+
+**Params**: 234,113 (novw baseline) → **588,353** (novw + C2). Δ = +354,240 (≈ 5 capas × 70K = gate_base 1,216 + fc_zq 77,824 cada una).
+
+### Resultados — Job 597009 (`wn18rr_ind_v1_novw_c2.yaml`, T=5, lr=8e-4, wu=3, 30 ep)
+
+| Epoch | LR | val MRR | test MRR | h@10 test |
+|-------|-----|---------|----------|-----------|
+| 0 | 0.0 | 0.0120 | 0.0175 | 0.032 |
+| **1** | **2.7e-4** | **0.3550** | **0.4315** | **0.718** |
+| 2 | 5.3e-4 | 0.2640 | 0.2943 | 0.601 |
+| 3 | 8.0e-4 (peak) | 0.2266 | 0.1591 | 0.410 |
+| 4 | 7.97e-4 | 0.2206 | 0.1187 | 0.354 |
+| 5 | 7.89e-4 | 0.1699 | 0.0866 | 0.287 |
+| 6 | 7.76e-4 | 0.1659 | 0.0836 | 0.255 |
+
+**`time_iter = 0.047s`** (vs 0.149s baseline) — **C2 es 3.2× MÁS RÁPIDO** que la baseline novw, porque eliminó dos Linear per-edge (`V_gate(edge_attr)`, `proj_vg(shared_edge)`) por uno per-graph (`fc_zq(query_emb)`) + gather.
+
+### Comparación directa con baseline (mismo schedule)
+
+| Run | best val | best test | best ep | observación |
+|-----|----------|-----------|---------|-------------|
+| **596512** (novw, gate aditivo) | 0.4803 | **0.5802** | ep1 | colapso ep2+ |
+| **597009** (novw + C2 bilinear) | 0.3550 | **0.4315** | ep1 | colapso ep2+ |
+| Δ | −0.125 | **−0.149** | — | **peor** |
+
+**C2 aislado EMPEORA la métrica en 0.149 MRR**. Y colapsa al menos tan fuerte como el baseline.
+
+### Re-diagnóstico
+
+El error de razonamiento fue tratar C1, C2, C3, C4 como independientes y testeables individualmente. Re-leyendo `diagnostico_solucion_inductivo.md`:
+
+La regla dice que TODA función que toque h debe ser content-only o relational-conditioned. Si dejo `W_K(h)` activo (driver de routing entity-específico, **VIOLACIÓN ACTIVA**) y le agrego C2 (más capacidad expresiva al gate), el optimizer encuentra **más dimensiones para combinar el routing memorizado con el gate bilinear** y crear shortcuts train-específicos. La capacidad adicional NO sirve sin antes bloquear el path entity-contaminante.
+
+**Conclusión**: **C2 sin C1 es contraproducente**. El bilinear gate solo paga su valor cuando el routing ya es relacional puro.
+
+Esto cambia la metodología de validación:
+
+- ❌ **NO testear los 4 cambios uno por uno aislados**. Cada uno aislado puede empeorar el modelo si los demás violadores siguen activos.
+- ✅ **Testear acumulativamente con C1 como base** (eliminar el path de routing entity-contaminante), luego sumar C2 encima, luego C3, luego C4.
+
+### Próximo paso propuesto
+
+**Cancelar 597009** (trayectoria ya clara) y lanzar:
+
+**Experimento siguiente: C1 solo** (`K = K(x0) + proj_k(q)`, sin C2 todavía).
+
+Razón: aislar el efecto de eliminar el routing entity-específico. El test crítico:
+- Si C1 solo sube de 0.58 → ~0.62-0.65: el routing era el cuello principal. **Después** sumar C2 para capturar el cross-term.
+- Si C1 solo NO mueve nada o baja: el diagnóstico está mal y hay que repensar la regla estructural antes de seguir.
+- Si C1 solo ya rompe transductivo gravemente: revisar tradeoff vs el K solo-query (sesión 5, gave 0.578 inductive).
+
+**Después de validar C1**: lanzar **C1 + C2** sobre la base estabilizada.
+
+### Estado del job 597009
+
+- Corriendo en GPU (compute-gpu-3-1), ep6 al cierre
+- Plan: cancelar después de confirmar trayectoria de colapso (probablemente cancelar ahora; los datos son suficientes)
+- Log: `logs/wn18rr_ind_v1_novw_c2_597009.out`
+
+### Archivos relevantes de esta sesión
+
+- `diagnostico_solucion_inductivo.md` — diagnóstico estructural completo y solución (4 cambios C1-C4 con justificación)
+- `configs/Exphormer/wn18rr_ind_v1_novw_c2.yaml` — config del experimento C2
+- `sbatch_wn18rr_ind_v1_novw_c2.sh` — sbatch correspondiente
+- `layer/exphormer.py` — implementación de C2 (commit pendiente)
+- `network/model.py` — threading de num_relations a través de MultiModel/MultiLayer/GlobalModel
+
+---
+
+## Estado anterior — 2026-04-29 (sesión 23): Cambio 1 (sin W_V) — resultados inductivos y diagnóstico de inestabilidad
+
+### Jobs lanzados
+
+| Job | Config | LR | Estado |
+|-----|--------|----|--------|
+| 596512 | novw (ind v1, 1-GPU) | 8e-4 | Corriendo (30 épocas) |
+| 596513 | transduct_novw (1-GPU verificación) | 2e-4 | Corriendo (30 épocas) |
+| 596522 | novw_lr2e4 (ind v1, 1-GPU) | 2e-4 | Corriendo (30 épocas) |
+| pendiente | transduct_novw_4gpu (4-GPU, 100 épocas) | 8e-4 (×4GPU) | Script listo, no lanzado aún |
+
+### Resultados del Cambio 1 — inductivo v1
+
+**Job 596512 (lr=8e-4)**
+
+| Epoch | LR | val MRR | test MRR |
+|-------|-----|---------|----------|
+| 1 | 2.7e-4 | **0.4803** | **0.5802** |
+| 2 | 5.3e-4 | 0.4230 | 0.3016 |
+| 3 | 8.0e-4 (peak) | 0.1953 | 0.2186 |
+| 4-7 | ↓ cosine | ~0.15 | ~0.09 |
+
+Checkpoint guardado: epoch 1, test=**0.5802** (iguala el baseline anterior 0.578).
+
+**Job 596522 (lr=2e-4)**
+
+| Epoch | LR | val MRR | test MRR |
+|-------|-----|---------|----------|
+| 1 | 6.7e-5 | 0.3941 | 0.4822 |
+| 2 | 1.3e-4 | **0.4374** | **0.5377** |
+| 3 | 2.0e-4 (peak) | 0.4285 | 0.2510 |
+| 4-5 | ↓ cosine | ~0.43 → 0.37 | ~0.17 |
+
+Checkpoint guardado: epoch 2, test=0.5377. Peor que 596512.
+
+### Diagnóstico de inestabilidad
+
+El patrón es idéntico en ambos runs: pico durante warmup, colapso exactamente al llegar al peak LR. El colapso ocurre independientemente del valor del peak (8e-4 o 2e-4), solo varía en qué epoch ocurre.
+
+**Causa probable**: sin W_V, los gradientes del ranking loss fluyen directamente por `V = h → query_rel_emb + encoder` sin la amortiguación que daba la proyección lineal. El peak LR produce updates que rompen los patrones de propagación relacional aprendidos en los primeros pasos de warmup. La inestabilidad es estructural a la arquitectura V=h con BF residual + LR schedule actual.
+
+**Mejor resultado disponible (Change 1)**: test MRR = **0.5802** @ ep1 del job 596512 (val-selected via ckpt_best).
+
+### Opciones para estabilizar (pendiente de implementar)
+
+1. **Label smoothing 0.1**: reduce sharpness del gradiente de ranking loss
+2. **Warmup más largo** (e.g., 10 épocas): permite más pasos a LR bajo antes del peak
+3. **Escalar V=h**: `V = h * alpha` con alpha learnable inicializado pequeño (amortigua el gradiente directo)
+4. **LR aún más bajo** (e.g., 5e-5): probablemente no resuelve el problema estructural
+
+### Cambio 1 — impacto en params
+
+```
+Antes (con W_V): 254,593 params
+Después (sin W_V): 234,113 params  (−20,480 = 5 capas × 64×64)
+```
+
+### Estado del cluster al cierre de sesión
+
+- 596512, 596513, 596522 corriendo en H100s
+- Script `sbatch_wn18rr_transduct_novw_4gpu.sh` listo para lanzar manualmente (4-GPU, 100 épocas, verifica que Change 1 no regresa transductivo desde 0.566)
+
+---
+
+## Estado actual — 2026-04-28 (sesión 22): análisis arquitectural profundo — por qué KnowFormer generaliza a inductivo y nosotros no
+
+### Experimentos de ruido gaussiano — DESCARTADOS
+
+Jobs 596498/596499/596500 (noise_std 0.5/1.0/2.0, wn18rr ind v1, 1×H100 cada uno).
+
+| noise_std | ep5 val MRR | ep5 test MRR | Tendencia |
+|-----------|-------------|-------------|-----------|
+| 0.5 | 0.0216 | 0.0243 | casi plano |
+| 1.0 | 0.0170 | 0.0256 | plano desde ep2 |
+| 2.0 | 0.0153 | 0.0200 | declinando |
+
+**Causa del fallo**: el ruido se agrega a `batch.x` → que se copia en `batch.x0` → que se re-suma en CADA capa vía residual BF `h = h + batch.x0`. Con T=5 capas y noise_std=1.0, la señal del anchor (`query_emb` con std≈0.01) queda aplastada por ruido acumulado de magnitud ~5. KnowFormer NO tiene residual BF — su ruido es fresco en cada capa, no se acumula. La intervención estaba mal adaptada a nuestra arquitectura.
+
+### Eliminaciones de esta sesión
+
+- FiLM (`use_film_e`, `proj_e`) eliminado del codebase completo. 255,105 params (−20,480 = 5 capas × 64×64).
+- Noise injection descartada como dirección en la forma actual.
+
+### Diagnóstico de los logs de ruido
+
+Los logs son catastróficos — val MRR ~0.015-0.02 en los tres, prácticamente aleatorio. Antes de analizar por qué, hay algo importante en la implementación que los destruye, lo explico abajo.
+
+### Diagnóstico de los logs
+
+| noise_std | ep5 val MRR | ep5 test MRR | Tendencia |
+|-----------|-------------|-------------|-----------|
+| 0.5 | 0.0216 | 0.0243 | casi plano |
+| 1.0 | 0.0170 | 0.0256 | plano desde ep2 |
+| 2.0 | 0.0153 | 0.0200 | declinando |
+
+**El ruido destruyó el entrenamiento.** La causa está en el BF residual:
+
+```python
+# MultiModel.forward()
+batch.x0 = batch.x          # ← x0 captura el ruido
+
+# MultiLayer.forward() en cada capa
+h = h + batch.x0            # ← re-agrega x0 CADA capa
+```
+
+El ruido de los nodos no-anchor se suma **T veces** a través de todas las capas. Con T=5 y noise_std=1.0, la señal efectiva del anchor (`query_emb` con std=0.01) queda aplastada por ruido acumulado de magnitud ~5. KnowFormer NO tiene residual BF — su ruido se aplica solo al primer paso del QK-stream y no se propaga. La intervención está mal adaptada a nuestra arquitectura.
+
+### Por qué KnowFormer funciona para inductivo (análisis profundo)
+
+Leyendo el código completo de `Knowformer/src/model.py`, la diferencia arquitectónica es mucho más profunda de lo que pensábamos.
+
+#### KnowFormer no es un transformer sobre un grafo — es NBFNet dentro de un transformer
+
+Dentro de cada `KnowformerLayer.forward()`:
+
+```python
+# Q/K stream: propaga NBF desde ceros, pesos = fc_qk_z(query_emb)
+qk_x = zeros(B, N, 1).normal_(0, 4)                    # simetría rota
+qk_x = fc_qk_x(cat([x, qk_x]))                         # proyectar al espacio d
+for layer in self.qk_layers:                            # num_qk_layer=2 pasos NBF
+    qk_x = layer(qk_x, qk_z, graph)                    # generalized_rspmm: Σ z[r] ⊙ h[u]
+
+# V stream: propaga NBF desde one-hot del head, pesos = fc_z(query_emb)
+v_x = zeros(B, N, d)
+v_x[:, h_index] = 1                                     # head labeling (no es rel_emb, es one-hot)
+v_x = fc_v_x(cat([x, v_x]))
+for layer in self.v_layers:                             # num_v_layer=2 pasos NBF
+    v_x = layer(v_x, z, r_index, graph)                 # generalized_rspmm
+
+q, k = fc_to_qk(qk_x).chunk(2)
+v = v_x
+x = x + attn(q, k, v)
+```
+
+**La operación `generalized_rspmm`** es exactamente la iteración de NBFNet DistMult:
+```
+output[v] = Σ_{(u,r,v)} z[b,r] ⊙ qk_x[b,u]
+```
+donde `z[b,r]` viene del query embedding y `qk_x[b,u]` es el estado actual del nodo. Esto es la misma semántica que `h_x ⊙ (W_r * q)` de NBFNet.
+
+#### Las diferencias críticas
+
+**1. Q y K no leen de `x` — tienen su propio NBF interno**
+
+En KnowFormer: Q/K provienen de un NBF separado (`qk_stream`) que empieza de ceros con ruido, propaga con pesos relacionales, y NUNCA lee `x`. Es puramente relacional.
+
+En el nuestro: `Q = W_Q(x0)`, `K = W_K(h^{t-1})`. Estas leen la representación acumulada que se contamina con el contexto de entidades del grafo de train.
+
+**2. V tiene su propio NBF con one-hot head labeling**
+
+En KnowFormer: `V` viene de un NBF que propaga desde `v_x[h_index] = 1` (one-hot, no rel_emb) con pesos relacionales. V codifica "qué caminos relacionales llevan desde el head hasta cada nodo". Esto es transferible: los caminos relacionales existen igual en train y test.
+
+En el nuestro: `V = W_V(h)` donde `h` acumula contexto de entidades. `W_V` aprende a proyectar la distribución del grafo de train — no transfiere.
+
+**3. Los Q/K/V se recomputan desde cero en cada capa**
+
+Dentro de cada `KnowformerLayer`, se lanza un NBF fresh desde ceros. Nunca hay contaminación de información de entidades del grafo anterior. El noise en qk_x tampoco se acumula porque se recomputa en cada forward.
+
+**4. La atención es secundaria — el trabajo lo hace el NBF**
+
+El mecanismo de atención linear en KnowFormer agrega Q/K/V que ya son puramente relacionales. La atención combina "¿qué tan bueno es el camino desde el anchor hasta v?" (Q/K stream) con "¿qué tan bueno es el camino desde el head hasta v?" (V stream). Es la intuición de path-based KGC.
+
+#### Por qué el nuestro no transfiere
+
+| Componente | Nuestro | KnowFormer |
+|---|---|---|
+| Q | `W_Q(x0)` + bias query | NBF 2-capas desde ceros + ruido |
+| K | `W_K(h^{t-1})` + bias query | mismo NBF que Q |
+| V | `W_V(h^{t-1})` * gate | NBF 2-capas desde one-hot head |
+| `h^{t-1}` | acumula contexto de entidades | nunca entra a Q/K/V |
+
+La representación `h^{t-1}` en nuestro modelo acumula contexto de qué entidades son los vecinos en el grafo de train. `W_K(h)` aprende a identificar "buenos sources de mensajes" según ese contexto. En el grafo inductivo de test, los mismos vectores de h contienen contexto de entidades completamente distintas — `W_K` proyecta a las mismas direcciones que aprendió para entidades del train.
+
+`W_V(h)` tiene el mismo problema: aprende a proyectar la distribución de representaciones del train graph. En test, esa distribución es distinta.
+
+#### Lo que necesita cambiar (dirección, sin implementar aún)
+
+La solución consistente con la arquitectura de KnowFormer sería que **Q/K/V no lean de `h` sino de propagaciones relacionales propias**. Específicamente:
+
+- **V debe ser una función de `(r_uv, r_q)` aplicada a la representación que viaja, NO una proyección lineal de h** — en el límite, `V = h ⊙ z_r(r_q)` donde `z_r` no tiene componente `W_K/W_V` que aprenda distribución de entidades.
+- Alternativamente: eliminar `W_V` completamente y usar `V = h * gate` (gate = función de arista × query) — esto se aproxima al DistMult de NBFNet donde el "V" es directamente h sin proyección adicional.
+- El insight sobre el ruido no estaba equivocado en principio, pero el ruido no ataca el problema real: el problema no es simetría inicial sino que `W_K` y `W_V` son funciones de la representación acumulada, y esa representación memoriza el grafo de entrenamiento.
+
+---
+
 ## Estado actual — 2026-04-28 (sesión 21): ablación FiLM transductivo + clarificación arquitectura
 
 ### Pregunta respondida: ¿FiLM se aplica solo sobre E?
@@ -298,498 +586,3 @@ La regresión **vive en los 5 archivos del refactor** (`layer/exphormer.py`, `ne
 - **Bench de 1 GPU es el discriminador correcto** para aislar regresiones de DDP vs código. Hacerlo antes de quemar 8h en 4 GPUs.
 - **El refactor "estético" de unificación de embeddings no es benigno bajo gradient checkpoint** — la interacción con `use_reentrant=False` y el closure-capture de Batch es no-trivial. Cualquier futuro refactor que mueva tensores `requires_grad=True` al objeto Batch necesita un bench inmediato.
 - `git fsck --no-reflog` recupera stashes dropeados — no perder esta capacidad cuando se hace bisect destructivo.
-
----
-
-## Plan (actualizado 2026-04-23, sesión 16)
-
-### Contexto y baseline a batir
-
-- **Baseline actual val-selected**: `wn18rr_ind_v1_qcdv_lr3e5.yaml` → val=0.386, test=0.486 @ ep5 (arquitectura query-conditioned DistMult V de sesión 12).
-- **Baseline histórico test-selected**: test=0.565 @ ep4 (arquitectura pre-refactor con W_V+gate, no comparable directamente).
-- **Transductivo**: 0.566 MRR (job 578765, ep7). Job 592207 corriendo con arquitectura restaurada W_V\*gate.
-- **Techo objetivo**: NBFNet 0.741, KnowFormer 0.752.
-- **Causa raíz identificada (sesión 13)**: colapso post-ep5 del test MRR — hits@1 cae a ~0 mientras hits@10 se mantiene. Val no lo refleja (entidades del train graph).
-
-### Cambio #1 — Inyección de ruido Gaussiano (PENDIENTE)
-
-**Estado**: pendiente. `fc_v_expand` fue eliminado en sesión 16; la motivación original (simetría en nodos no-anchor con `x=0`) sigue siendo válida con la arquitectura W_V\*gate actual.
-
-**Dónde intervenir**: `encoder/node_encoders.py` → `KGCNodeEncoder.forward`: añadir `x_v = noise_std * torch.randn(...)` para nodos no-anchor durante training. No tocar el anchor (destruiría la boundary condition).
-
-**Flag a agregar**: `cfg.gt.noise_std: 0.0`. Sweep: {0.5, 1.0, 2.0, 4.0}.
-
-**Prerrequisito**: primero resolver la regresión de velocidad 2.7× (ver sesión 17) o correr en 1 GPU para validar el efecto.
-
-### Cambio #2 — LR diferenciado (OBSOLETO)
-
-**Estado**: descartado. `fc_v_expand` fue eliminado en sesión 16 y no existe en el código actual. No aplicable.
-
-### Cambio #3 — Unificación de tablas de relaciones ✅ COMPLETADO (sesión 18)
-
-**Nota**: implementado en sesión 15, revertido en sesión 17 (intento fallido de solucionar regresión de velocidad), reimplementado correctamente en sesión 18.
-
-**Estado final**: **2 tablas** en todo el modelo:
-
-| Tabla | Módulo | Shape | Rol |
-|-------|--------|-------|-----|
-| `query_rel_emb` | `MultiModel` | `(R, d)`, std=0.01 | única tabla r_q — lookup una vez por forward |
-| `emb` | `RelationEmbeddingEncoder` | `(R, d)` | r_uv (features de arista del KG) — separada por diseño |
-
-Cada módulo aplica sus propias proyecciones lineales sobre `batch.query_emb`:
-- `KGCNodeEncoder`: usa directamente como boundary condition (`x_anchor = batch.query_emb`)
-- `ExpanderEdgeFixer`: aplica `proj_exp_edge` (Linear d→d_edge, std=0.01)
-- `ExphormerAttention` × L: aplica `proj_q/k/e/vg` por capa
-- `KGCHead`: usa directamente para scoring
-
-**KnowFormer** confirmado: usa exactamente 1 tabla (`query_embedding`) + proyecciones por rol/capa. Diseño idéntico al nuestro.
-
-**Resultado final**: 1 `query_rel_emb(R, d)` + proyecciones aprendidas por rol. Más 1 `edge_rel_emb(R, d)` para r_uv. Igual que KnowFormer.
-
-**Estado**: todos los pasos implementados de una vez. Smoke tests pasan. Ahorro de parámetros verificado exacto. El valor es metodológico (tesis) y de consistencia con KnowFormer/NBFNet.
-
-### Lo que NO hay que hacer
-
-- **NO volver a intentar V bypass** (sesión 14 cerrada: optimizer abre el atajo → colapso).
-- **NO volver a variantes V ya probadas**: `use_relational_v`, `use_nbf_v`, `use_distmult_v`, V-RMPNN, PNA con mean — todas con diagnóstico documentado en sesión 12.
-- **NO escalar dim/L sin arreglar colapso primero**: `dim=128 L=5` ya probado (0.501 < 0.565).
-- **NO experimentos transductivos nuevos** hasta que inductivo supere 0.6 con arquitectura unificada — el transductivo actual (0.566 @ ep7) ya es satisfactorio para tesis-stage-1.
-
-### Orden de ejecución sugerido
-
-1. Implementar flag `gt.noise_std` + modificación en `KGCNodeEncoder.forward`.
-2. Smoke test (1 epoch, 4 steps) con `noise_std: 1.0` para verificar que no rompe nada.
-3. Crear 4 configs (`wn18rr_ind_v1_qcdv_noise{05,10,20,40}.yaml`) + sbatch scripts.
-4. Lanzar los 4 en paralelo (1×H100 cada uno). Tiempo estimado: 4-6h cada uno.
-5. Analizar resultados, seleccionar mejor `noise_std`.
-6. Si mejora → implementar cambio #2 sobre esa config. Si no mejora → documentar en sesión 15 como descarte, pasar a cambio #3 o reevaluar.
-
-### Archivos a tocar (estimación)
-
-| Archivo | Cambio #1 | Cambio #2 |
-|---------|-----------|-----------|
-| `encoder/node_encoders.py` | ~8 líneas en `KGCNodeEncoder` | — |
-| `config.py` | +1 línea (`gt.noise_std`) | +1 línea (`optim.v_lr_mult`) |
-| `train/trainer.py` | — | ~10 líneas en optimizer build |
-| `configs/Exphormer/wn18rr_ind_v1_qcdv_noise*.yaml` | 4 nuevos | — |
-| `sbatch_wn18rr_ind_v1_qcdv_noise*.sh` | 4 nuevos | — |
-
-### Estado al final de sesión 14 (punto de partida)
-
-- Código: post-sesión 13 (qcdv con fc_v_expand, lr sweep completado). V bypass revertido.
-- Config mejor (val-selected): `wn18rr_ind_v1_qcdv_lr3e5.yaml`.
-- Sin jobs en cola. Listo para sesión 15.
-
----
-
-## Estado actual — 2026-04-23 (sesión 16)
-
-### Resultados transductivos — CERRADOS
-
-| Job | Config | Val MRR | Test MRR | Épocas | Estado |
-|-----|--------|---------|----------|--------|--------|
-| 578765 | transduct_best (viejo, W_V\*gate) | 0.5654 | **0.5661** | ep7 | Terminado, plateau definitivo |
-| 581959 | transduct_noexp (viejo, sin expander) | 0.5551 | **0.5551** | ep8 | Terminado, plateau definitivo |
-| 591749 | transduct_noqc (actual, sin QC) | 0.1146 | 0.1239 | ep10 | Corriendo — **ROTO** |
-
-**Ablación expander confirmada**: +0.011 MRR (0.566 vs 0.555). Coincide exactamente con `metodologia.tex`. ✓
-
-**Por qué noqc está roto** (diagnóstico sesión 16): con `use_query_conditioning=False`, Q está anclado a `x0`. Para nodos no-anchor `x0=0` → `Q=W_Q(0)=0` (sin bias) en **todas las capas**. Score trilineal `Q⊙K⊙E=0` → `exp(0)=1` → atención uniforme sobre todos los vecinos en el 99.99% de nodos. El mecanismo de Q-anclado-a-x0 **requiere** `proj_q(r_q)` para funcionar; no son disociables. El experimento noqc no mide "efecto del QC" sino "QC removido de una arquitectura que lo requiere". Resultado no interpretable como ablación. **Puede matarse** el job 591749.
-
-### Decisión de arquitectura — reversión a W_V\*gate
-
-**Origen de fc_v_expand** identificado: es matemáticamente idéntico a `W_r·q` de NBFNet (no a KnowFormer, cuyo V-RMPNN es una red NBF de 2 capas completa). El comentario "KnowFormer-style" en el código era incorrecto.
-
-**Decisión**: eliminar `fc_v_expand` y volver a la arquitectura que dio 0.566 transductivo. Razones:
-1. El 0.566 ya está documentado en `metodologia.tex` y es el resultado de referencia para tesis.
-2. fc_v_expand nunca se corrió en transductivo — no hay datos empíricos de que mejore.
-3. La arquitectura W_V\*gate es más simple y reproducible.
-
-### Cambios de código — sesión 16
-
-**`layer/exphormer.py`**:
-- Eliminado `QKLayer` class completo.
-- Eliminados de `ExphormerAttention`: `fc_v_expand`, `expander_v_weight`, `num_relations_v`, `fc_qk_x`, `fc_qk_z`, `qk_layers`, `qk_noise_std`, `num_qk_layers`.
-- Restaurados: `self.V = nn.Linear(...)` (siempre), `self.V_gate`, `self.proj_vg` (cuando `use_query_conditioning=True`).
-- `propagate_attention`: reemplazado bloque `z_v_per_graph` por `v_src = V_h[src] * E_gate`.
-- `forward`: `V_h = self.V(h)` siempre; E_gate computado como `V_gate(edge_attr) + proj_vg(shared_edge)`.
-- Init restaurado: `proj_q`, `proj_k`, `proj_e`, `proj_vg` → `std=0.01` (igual que código 0.566).
-
-**`network/model.py`**: eliminados `qk_noise_std`, `num_qk_layers` de `GlobalModel`, `MultiLayer`, `MultiModel`.
-
-**`config.py`**: eliminados `cfg.gt.qk_noise_std`, `cfg.gt.num_qk_layers`.
-
-**Diferencias que quedan** respecto al 0.566 exacto (consecuencia de la tabla compartida de sesión 15):
-- `shared_rel_emb_table` (atención): std=0.01 independiente por capa → std=0.02 compartida.
-- `KGCNodeEncoder.rel_emb`: std=1.0 (default Embedding) → std=0.02 (compartida).
-- `KGCHead.rel_emb`: std=1.0 → std=0.02.
-- `exp_edge_query_emb`: std=0.01 → std=0.02.
-- Estas no se pueden igualar sin deshacer la unificación. Con 100 épocas y cosine schedule debería converger igual.
-
-### Refactor KnowFormer-style — lookup centralizado
-
-**Motivación**: aunque la sesión 15 unificó las tablas de relación a un único `nn.Embedding` compartido, el `repr` del modelo mostraba 8 entradas `Embedding(22,64)` (una por cada módulo que tenía un atributo apuntando al mismo objeto). Era confuso, aunque funcionalmente correcto. KnowFormer hace **un solo lookup** en su `forward` top-level (`Knowformer.forward` línea 250: `z = self.query_embedding(r_index)`) y pasa el tensor `z` a las capas. Limpiamos para seguir el mismo patrón.
-
-**Cambios en código**:
-
-1. `MultiModel.forward()`: agregado al inicio:
-   ```python
-   if hasattr(self, 'query_rel_emb'):
-       batch.query_emb = self.query_rel_emb(batch.query_relation)   # (B, dim_hidden), 1 lookup
-   ```
-
-2. Eliminados de todos los módulos los atributos que apuntaban al embedding compartido:
-   - `KGCNodeEncoder.rel_emb` → ahora usa `batch.query_emb` directamente
-   - `ExpanderEdgeFixer.exp_edge_query_emb` → indexa `batch.query_emb[graph_idx]`
-   - `ExphormerAttention.shared_rel_emb_table` → indexa `batch.query_emb[batch.batch]` (per-node) y `batch.query_emb[edge_graph]` (per-edge)
-   - `KGCHead.rel_emb` → usa `batch.query_emb`
-
-3. Eliminados parámetros `shared_query_emb` de la cadena de constructores (`FeatureEncoder`, `GlobalModel`, `MultiLayer`, `build_node_encoder`, `build_head`, `ExphormerAttention`, `ExpanderEdgeFixer`, `KGCNodeEncoder`, `KGCHead`).
-
-4. Eliminado `num_relations` de `ExphormerAttention.__init__` (ya no se necesita; el embedding vive solo en MultiModel).
-
-**Resultado del refactor (smoke test)**:
-- params: **271,489** (idéntico — el refactor es organizacional, no cambia params).
-- val/test MRR @ ep0: idénticos al pre-refactor (mismas dinámicas de entrenamiento).
-- En el `repr` del modelo ahora aparecen solo **2 entradas** `Embedding(22,64)`: `MultiModel.query_rel_emb` (query relations) y `RelationEmbeddingEncoder.emb` (edge relations `r_uv`, separada por diseño). Los demás módulos ya no tienen atributos de embedding.
-
-**Equivalencia matemática**: `embedding(idx)` y `embedding_output[idx]` (donde `embedding_output = embedding(all_indices)`) son operaciones idénticas en términos de gradientes y outputs. PyTorch autotrack la cadena gradiente desde cada uso indirecto hasta el `nn.Parameter` original.
-
-### Job lanzado — 592218
-
-Config: `wn18rr_transduct_best.yaml` (L=5, d=64, n_heads=4, exp=True, use_query_conditioning=True).
-Arquitectura: W_V\*gate + tabla compartida + lookup centralizado en `MultiModel.forward`.
-Params: **271,489** (idéntico al pre-refactor; vs 281,345 original con 7 tablas independientes).
-Log: `logs/wn18rr_transduct_best_592218.out`.
-GPUs: 4×H100. ~50 min/época. Resultado esperado en ~6h.
-
-**Job 592207 cancelado** antes del refactor (no completó épocas significativas).
-
-### Lo que NO hay que hacer
-
-- **NO correr `best.yaml actual (fc_v_expand)`** — se decidió no continuar con esa arquitectura.
-- **NO reinstaurar fc_v_expand** — fue eliminado en esta sesión.
-- **NO interpretar noqc como ablación** — el resultado (~0.12 MRR) es consecuencia de un diseño incompatible, no del efecto del QC.
-
----
-
-## Estado actual — 2026-04-23 (sesión 15)
-
-### Limpieza de código — COMPLETADA
-
-Eliminados `tie_rel_emb` e `inductive_routing` de todo el codebase: `layer/exphormer.py`, `network/model.py`, `config.py`, todos los YAMLs en `configs/Exphormer/`, `CLAUDE.md`, `SESSION_NOTES.md`. También eliminados los archivos raíz muertos `exphormer.py` y `model.py` (nunca importados por `main.py`). Resultado: 0 ocurrencias de esos flags en todo el proyecto.
-
-### Clarificación arquitecturas transductivo — IMPORTANTE
-
-Análisis de sesión 15 reveló que el MRR 0.566 (job 578765) **no puede compararse directamente** con ningún experimento de la arquitectura actual. El viejo job usaba código pre-sesión-12 donde `use_query_conditioning: True` activaba W_V\*gate (no fc_v_expand). Ese mecanismo gate fue eliminado en sesión 12 y no existe en el código actual.
-
-Las tres arquitecturas comparables en transductivo:
-
-| Experimento | Q/K cond | V mecanismo | FiLM | Params | MRR |
-|---|---|---|---|---|---|
-| Job 578765 (viejo, código s10) | ✓ proj_q/k | W_V \* gate | ✓ | 281K | **0.566** |
-| noqc (job 591749, código actual) | ✗ | W_V estándar | ✗ | 172K | corriendo |
-| best.yaml actual (código actual) | ✓ proj_q/k | fc_v_expand | ✓ | 661K | nunca corrido |
-
-**Ablación FiLM (job 591253) — CANCELADA**: el diseño era incorrecto. El "baseline con FiLM" (0.566) era el modelo viejo con W_V\*gate; el "nofilme" usaba la nueva arquitectura con fc_v_expand. No era una ablación limpia de proj_e — eran dos arquitecturas distintas. Se descartó.
-
-### Experimento noqc — LANZADO (job 591749)
-
-Config `wn18rr_transduct_noqc.yaml`: idéntico a `wn18rr_transduct_best.yaml` pero con `use_query_conditioning: False`. Elimina fc_v_expand, proj_q/k, shared_rel_emb_table y usa V estándar (`W_V(h)`). Es el Exphormer puro con KGC encoding (boundary condition + relation edge features), sin ningún condicionamiento de query en la atención.
-
-Params: 172K. Smoke test: exit 0. Log: `logs/wn18rr_transduct_noqc_591749.out`.
-
-**Qué mide**: cuánto aporta cualquier query conditioning en transductivo. Si da cerca de 0.566, el query conditioning en atención no ayuda. Si da bastante menos, el viejo Q/K+gate (281K) sí era útil.
-
-**Pendiente para completar el cuadro**: lanzar `wn18rr_transduct_best.yaml` con código actual (Q/K cond + fc_v_expand + FiLM, 661K) para aislar si fc_v_expand mejora respecto al viejo gate.
-
-### Unificación de tablas de relaciones — IMPLEMENTADO
-
-Análisis completo de las 4+L tablas de embeddings de relación en el modelo vs KnowFormer/NBFNet. Conclusión: tablas 1, 3, 4×L, 5 consumen r_q (misma señal, roles distintos) y deben compartir una única tabla base con proyecciones por rol/capa. Tabla 2 (r_uv, estructural) mantiene la suya.
-
-**Implementación**: `MultiModel` crea `self.query_rel_emb = nn.Embedding(R, d)` y lo pasa a todos los módulos como `shared_query_emb`. Cada módulo lo asigna a su atributo local (`self.rel_emb`, `self.shared_rel_emb_table`, `self.exp_edge_query_emb`) — mismo objeto `nn.Embedding`. Las proyecciones por capa (`proj_q`, `proj_k`, `proj_e`, `fc_v_expand`) quedan per-layer, preservando expresividad.
-
-**Archivos modificados**: `network/model.py` (MultiModel, FeatureEncoder, GlobalModel, MultiLayer), `encoder/node_encoders.py`, `encoder/exp_edge_fixer.py`, `layer/exphormer.py`, `network/heads.py`.
-
-**Ahorro de parámetros verificado por smoke test**:
-
-| Setting | Antes | Después | Ahorro |
-|---------|-------|---------|--------|
-| Transductivo (L=5, R=22, d=64) | 670,785 | 660,929 | −9,856 = 7×22×64 ✓ |
-| Inductivo v1 (L=3, R=18, d=64) | 584,257 | 578,497 | −5,760 = 5×18×64 ✓ |
-
-Ambos smoke tests: exit 0. Backward compat: si `shared_query_emb=None` (non-KGC), cada módulo crea su propia tabla como antes.
-
----
-
-## Estado actual — 2026-04-20 (sesión 14)
-
-### V bypass inspirado en KnowFormer — DESCARTADO
-
-**Motivación**: análisis de `Knowformer/src/model.py` reveló que KnowFormer usa un término de bypass en su atención linear (`numerator = ... + v*num_node`, líneas 146-185). Esto permite que `V` fluya directamente al output incluso si la atención es débil — útil como "safety net" cuando las queries/keys son ruidosas. Se implementó como intervención unificada (aditiva, no debería regresionar transductivo).
-
-**Cambios aplicados (luego revertidos)**:
-- `layer/exphormer.py`: agregado `use_v_bypass` flag, `bypass_scale = nn.Parameter(torch.zeros(1))` init=0, y `h_out = batch.wV + bypass_scale * batch.V_h`.
-- `network/model.py`: propagación del flag por `GlobalModel` → `MultiLayer` → `MultiModel`.
-- `config.py`: `cfg.gt.use_v_bypass = False` (default).
-- Nuevo config `wn18rr_ind_v1_vbypass.yaml` + sbatch correspondiente.
-
-**Intento 1 (sin escalar, `h_out = wV + V_h`)**: ep3 val=0.235 / test=0.295, luego colapso total. Causa: el V bypass duplica la señal con el outer residual de `GlobalModel.forward` (`h_attn = h_in1 + h_attn`) → `h_attn = 2*h_in1 + wV`. Magnitud explota 2^L.
-
-**Intento 2 (con escalar learnable, init=0)**: job 583056 → bloqueó el breakthrough del baseline.
-
-| Métrica | vbypass (ep4 best) | qcdv_lr3e5 baseline (ep5) |
-|---------|---------------------|----------------------------|
-| val MRR | 0.239 | **0.386** |
-| test MRR | 0.294 | **0.486** |
-
-Después de ep4, vbypass colapsa a val~0.03 / test~0.06 (random-level).
-
-**Diagnóstico**: aunque `bypass_scale` init=0 garantiza ep0 idéntico al baseline, el optimizer abre el bypass inmediatamente. `V_h = raw_h` pasa sin filtrar — no tiene el preprocesado relacional de KnowFormer (que tiene un stream V-RMPNN separado con 2 capas NBF internas antes del bypass). En nuestra arquitectura de stream único, el gradiente prefiere el atajo del bypass antes que aprender el mecanismo de atención complejo. Se rompe el refinamiento iterativo de representaciones.
-
-**Lección**: no todo cambio aditivo de KnowFormer transfiere. El bypass es específico de su arquitectura dual-stream (Q-RMPNN + V-RMPNN), no del mecanismo de atención en sí. Intervenciones unificadas deben respetar la topología de flujo de señal de la arquitectura existente, no solo preservar ep0.
-
-**Estado del código**: todas las modificaciones de V bypass revertidas. Config y sbatch eliminados. Código vuelto al estado post-sesión 13 (qcdv con lr sweep).
-
-### Próxima dirección propuesta
-
-Siguiente intervención unificada: **inyección de ruido Gaussiano** para symmetry-breaking al embedding inicial (análogo a `qk_x = torch.zeros(B,N,1).normal_(0,4)` en KnowFormer, línea ~193). Es aditiva y no rompe transductivo. Ataca el colapso post-ep3 sin competir con el mecanismo de atención.
-
----
-
-## Estado actual — 2026-04-17 (sesión 13)
-
-### LR sweep sobre arquitectura qcdv — COMPLETADO
-
-Config base: `wn18rr_ind_v1_qcdv_lr3e5.yaml` (L=3, dim=64, n_heads=4, no expander, cosine_with_warmup, warmup=5).
-
-| LR | Job | Mejor val ckpt (ep) | val MRR | test MRR | test H@10 | Comportamiento |
-|----|-----|---------------------|---------|----------|-----------|----------------|
-| 1e-5 | 581966 | ep11 | 0.371 | 0.496 | ~0.73 | estable, no colapsa |
-| **3e-5** | 581967 | **ep5** | **0.386** | **0.486** | **0.753** | estable, decline gradual |
-| 1e-4 | 581968 | ep2 | 0.374 | 0.497 | 0.753 | test colapsa desde ep6 (hits@1→0) |
-| 3e-4 | 581969 | ep1 | 0.358 | 0.483 | 0.758 | colapsa desde ep4 |
-
-**Observaciones clave:**
-
-1. **Colapso aún presente a LR alto**: La nueva arquitectura NO eliminó el colapso — lo ralentizó. A lr≥1e-4 el test MRR (no val) colapsa igualmente. El val no lo refleja porque usa entidades del train graph.
-
-2. **Patrón de colapso del test a lr=1e-4**: hits@1 cae a ~0 desde ep6 mientras H@10 se mantiene (~0.70). El modelo aprende a poner a la respuesta correcta en el top-10 pero no en el top-1 — score casi uniforme.
-
-3. **Mejor LR**: lr=3e-5 da mejor val (0.386) y comportamiento más estable. El test MRR al pico val es 0.486, pero el pico test observado fue 0.486@ep5.
-
-4. **Techo actual (val-selected)**: ~val=0.386, test=0.486 — por debajo del mejor histórico pre-refactor (val=0.415→ test=0.565, test-selected).
-
-5. **T=4 lanzado**: job 581970, config `wn18rr_ind_v1_qcdv_lr3e5_L4.yaml`, log: `logs/wn18rr_ind_v1_qcdv_lr3e5_L4_581970.out`
-
-### HIPÓTESIS PARA PRÓXIMA SESIÓN: inicialización de fc_v_expand
-
-**Problema identificado**: `fc_v_expand` se inicializa con `std=0.01` → arranca casi en cero. Esto significa que durante las primeras épocas, el nuevo V relacional (`h ⊙ z_r`) produce señal casi nula. Durante ese tiempo, el modelo sigue dependiendo de Q/K para aprender, y Q/K son entity-specific → memorizan topología del train graph antes de que el V relacional se active.
-
-Cuando el V relacional finalmente escala (gradientes lo empujan hacia valores mayores), ya es tarde: Q/K han convergido a patrones específicos del train graph que no transfieren al test graph inductivo.
-
-**Direcciones a explorar (en orden de prioridad):**
-
-1. **Inicialización ortogonal / Kaiming de fc_v_expand**: reemplazar `nn.init.normal_(std=0.01)` por `nn.init.kaiming_uniform_` o `nn.init.orthogonal_`. Fuerza a que el V relacional contribuya desde época 0, compitiendo con Q/K desde el inicio. Riesgo bajo, 1 línea.
-
-2. **LR diferenciado para fc_v_expand**: usar un optimizer con param groups — `fc_v_expand` con LR 10× mayor que el resto. Fuerza convergencia rápida del V sin destabilizar Q/K/E. ~5 líneas en `train/trainer.py`.
-
-3. **Warmup específico del V**: congelar Q/K los primeros N epochs (o ponerles LR=0) mientras fc_v_expand aprende. Una vez V activo, descongelar Q/K. Riesgo: Q/K necesitan ver señal de V para aprender routing útil.
-
-4. **Init fc_v_expand ≈ identidad relacional**: para cada relación `r`, inicializar `z_r ≈ ones` (de modo que `h ⊙ z_r ≈ h` al inicio, como el viejo W_V sin transformación). Preserva el flujo de gradiente desde época 0 mientras aprende la dependencia relacional. Implementación: inicializar el output de fc_v_expand en ones → `nn.init.constant_` + normalización.
-
-**Línea base para comparar**: qcdv con lr=3e-5 da val=0.386, test=0.486 @ ep5. Cualquier variante de init debe superar esto.
-
----
-
-## Estado actual — 2026-04-17 (sesión 12)
-
-### Resultados benchmarking v2/v3/v4 — COMPLETADOS
-
-Todos los jobs finalizaron. Comparación con NBFNet (paper):
-
-| Split | Nuestro test MRR | Nuestro H@10 | NBFNet MRR | NBFNet H@10 | Epoch |
-|-------|-----------------|-------------|------------|-------------|-------|
-| v1 | **0.578** | 0.776 | 0.741 | 0.948 | 4 |
-| v2 | **0.514** | 0.714 | ~0.68 (est.) | ~0.92 (est.) | 4 |
-| v3 | **0.229** | 0.325 | ~0.67 (est.) | ~0.93 (est.) | 3 |
-| v4 | **0.474** | 0.669 | ~0.73 (est.) | ~0.95 (est.) | 4 |
-
-v3 es llamativamente bajo (0.229). El test graph de v3 tiene 5,084 nodos (vs 922 en v1, 2,757 en v2).
-Posibles causas: (1) grafo más grande → más ruido con sum aggregation, (2) distribución de relaciones diferente en v3, (3) mismos hiperparámetros no óptimos para v3.
-Necesita investigación adicional si se reporta en tesis.
-
-### WN18RR transductivo (job 578765) — COMPLETADO ep40+
-
-| Época | val MRR | test MRR | LR | Nota |
-|-------|---------|----------|----|------|
-| 7 | **0.565** | **0.566** | ~0.00080 | MEJOR ckpt |
-| 39 | 0.554 | 0.555 | cosine decay | |
-| 40 | 0.553 | 0.554 | cosine decay | sin mejora desde ep7 |
-
-Best checkpoint definitivo: ep7 → val=0.565, test=**0.566**. Plateau claro desde ep7 → el modelo no mejora con más entrenamiento en la config actual.
-
-### Experimento sin expander transductivo — LANZADO (job 581959)
-
-Config `wn18rr_transduct_noexp.yaml`: idéntica a `wn18rr_transduct_best.yaml` excepto `prep.exp: False`, `exp_deg: 0`, `max_epoch: 15`, `--time=24:00:00`.
-Objetivo: comparar MRR con vs sin expander en setting transductivo.
-
----
-
-### ANÁLISIS RAÍZ: Por qué necesitamos cambiar el mecanismo de V (sesión 12)
-
-**Pregunta**: ¿por qué KnowFormer y NBFNet usan la misma arquitectura para transductivo e inductivo y nosotros no?
-
-**Respuesta**: la diferencia está en el mecanismo de mensaje, no en flags.
-
-#### Nuestro modelo vs KnowFormer — dónde entra la relación
-
-| Modelo | Mensaje V | Propiedad |
-|--------|-----------|-----------|
-| KnowFormer | `msg = h[u] ⊙ z_r[r_uv](r_q)` | Filtro relacional **antes** de agregar |
-| Nuestro | `msg = W_V(h[u]) * gate(r_uv)` | Filtro relacional **después** de proyección genérica |
-
-`z_r[r_uv](r_q) = fc_z(query_emb[r_q])[r_uv]` — función de AMBAS `r_uv` Y `r_q`. Cruce de (arista × query).
-
-`gate(r_uv)` — solo función de `r_uv`. Sin cruce con query.
-
-#### Por qué W_V(h) no transfiere entre grafos
-
-`h[u]` acumula información de los vecinos específicos de `u` en el training graph. `W_V` aprende a proyectar esa distribución de entidades a direcciones útiles en el espacio de salida. En el test graph inductivo, las mismas dimensiones de `h[u]` contienen entidades completamente distintas → `W_V` mapea a las mismas direcciones que aprendió del train graph → inducción fallida.
-
-En KnowFormer, `h[u]` a la capa `l` = resultado de RMPNN partiendo de **ceros** (o ruido aleatorio para QK). Siempre expresa "qué tipos de caminos relacionales llevan a u para query r_q" — misma distribución en train y test → FFN transfiere.
-
-#### Por qué la arquitectura anterior no transfería entre settings
-
-La arquitectura con W_V(h) + gate aprende representaciones específicas del grafo de entrenamiento que no transfieren al grafo de prueba inductivo. KnowFormer no tiene este problema porque su V-RMPNN siempre parte de cero y expresa caminos relacionales, no identidades de entidades.
-
-#### Por qué todos nuestros intentos de V relacional fallaron
-
-| Intento | Problema |
-|---------|----------|
-| `use_relational_v`: `V *= rel_emb[r_uv]` | Dos señales multiplicativas competitivas (V + gate) |
-| `use_nbf_v`: `V = h ⊙ W_r_standalone[r_uv]` | `W_r` solo depende de `r_uv`, no de `r_q` |
-| `use_distmult_v`: `V = W_V(h) ⊙ W_r_standalone[r_uv]` | Mismo problema: sin cruce `(r_uv × r_q)` |
-
-Nunca tuvimos `z_r = f(r_uv, r_q)`. Siempre fue `f(r_uv)` solo o `f(r_q)` solo.
-
-#### Solución: Query-conditioned DistMult V (KnowFormer-style)
-
-Reemplazar `V = W_V(h)` por `V = h ⊙ z_r[r_uv](r_q)` donde:
-
-```python
-z_full = fc_v_expand(shared_rel_emb[r_q])  # (N, R * d) — función de query
-z_full = z_full.view(N, R, num_heads, out_dim)
-# per-edge:
-z_r_per_edge = z_full[batch_per_edge, edge_rel_idx]   # (E, heads, out_dim)
-v_src = h[src] * z_r_per_edge                          # DistMult: h ⊙ f(r_uv, r_q)
-```
-
-Sin gate separado (el gate queda incorporado en `z_r`). K entity-specific se preserva. FFN intacto.
-
-**¿Afecta a lo transductivo?**
-- K no cambia → routing entidad-específico preservado ✅
-- V pierde W_V (mezcla cross-dimensional) pero el FFN compensa ✅
-- V gana cruce `(r_uv × r_q)` — más informativo ✅
-- KnowFormer usa exactamente este V y logra MRR=0.594 transductivo (vs nuestro 0.566) ✅
-- Veredicto: transductivo se mantiene o mejora
-
-**Parámetros nuevos**: `fc_v_expand: d → R*d` — para WN18RR inductivo (R=18, d=64): ~73K params nuevos vs ~5K del W_V + gate actual. Aceptable.
-
-### IMPLEMENTADO (sesión 12, 2026-04-17)
-
-Cambios en código:
-- `layer/exphormer.py`: reescrito completamente. Eliminados `use_edge_gating`, `gate_rel_mult`, `use_nbf_v`, `use_distmult_v`, `use_rel_matrix_v`, `use_pna`, `use_alpha_mix_qk`. Nuevo V: `fc_v_expand` (query-conditioned DistMult) siempre activo cuando `use_query_conditioning=True`. Expander edges usan `expander_v_weight` (learnable, init=ones).
-- `network/model.py`: eliminados `VRMPNN`, `GlobalModel`/`MultiLayer`/`MultiModel` simplificados. FFN siempre 2-layer. Eliminados `use_film_ffn`, `ffn_type`, todos los flags muertos.
-- `config.py`: solo queda `use_query_conditioning`.
-- Configs YAML: limpiados de flags muertos.
-
-Params nuevos (fc_v_expand por capa): `in_dim × (R × heads × out_dim)` = 64 × (18×64) = 73K por capa (inductivo v1).
-- wn18rr_ind_v1 (3L, R=18): 353K params (vs ~120K anterior)
-- wn18rr_transduct (5L, R=22): 670K params (vs ~281K anterior)
-
-Smoke test: ambos settings corren sin errores ✅
-
-**Pendiente**: lanzar experimento real con nueva arquitectura.
-
----
-
-## Estado actual — 2026-04-15 (sesión 11)
-
-### Monitoreo transductivo (job 578765)
-
-Job en curso. Recuperación confirmada — el modelo superó 0.55 en época 8.
-
-| Época | val MRR | test MRR | LR | Nota |
-|-------|---------|----------|----|------|
-| 4 | 0.485 | 0.488 | 0.00064 | warmup |
-| 5 | 0.483 | 0.486 | 0.00080 | LR alcanza máximo |
-| 6 | 0.534 | 0.533 | 0.00080 | salto al salir de warmup |
-| 7 | 0.544 | 0.544 | 0.00080 | subiendo |
-| 8 | **0.553** | **0.553** | 0.00080 | último registrado |
-
-El LR recién alcanzó el máximo en época 5 (warmup=5). Con cosine sobre 100 épocas, el pico real se espera en épocas 15–30. ~50 min/época.
-
-Nota: los "Best so far: epoch N" del log cuentan desde el reinicio del job (resumed desde ckpt ep3), no época absoluta.
-
-### Benchmarking v2/v3/v4 — LANZADO
-
-Configs v2/v3/v4 actualizados para usar los mejores hiperparámetros del `exp3_qcond`:
-
-| Cambio | Antes (v2/v3/v4) | Ahora |
-|--------|-----------------|-------|
-| `gt.layers` | 5 | 3 |
-| `ffn_type` | standard | none |
-| `base_lr` | 0.0008 | 0.00001 |
-| `num_warmup_epochs` | 3 | 5 |
-| `ckpt_monitor_split` | no definido | val |
-| `train_steps_per_epoch` | 4-GPU values | 1-GPU values |
-
-Tamaños de datasets (train graph / test ind graph):
-- v2: 6954 / 2757 entities, 15262 train triples, 3816 steps/epoch
-- v3: 12078 / 5084 entities, 25901 train triples, 6476 steps/epoch
-- v4: 3861 / 7084 entities, 7940 train triples, 1985 steps/epoch
-
-**Jobs lanzados:**
-- v2: job 579787, `logs/wn18rr_ind_v2_579787.out`
-- v4: job 579788, `logs/wn18rr_ind_v4_579788.out`
-- v3: job 579789, `logs/wn18rr_ind_v3_579789.out` (pending)
-
-**Referencia baseline (v1):** test MRR=0.578, val=0.438 @ ep4 (config exp3_qcond)
-
----
-
-## Estado actual — 2026-04-15 (sesión 10)
-
-### Diagnóstico: transductivo WN18RR completamente roto (jobs 575904, 578249)
-
-Dos runs del config `wn18rr_transduct_best.yaml` dieron MRR ≈ 0.0003–0.0005 durante >10 épocas — predicción uniforme sobre los 40,943 entidades (loss=10.67 ≈ ln(40943), random).
-
-**Job 578249 (tanh)**: se encontró `torch.tanh(h_attn)` en `network/model.py` en el residual de atención:
-```python
-h_attn = h_in1 + torch.tanh(h_attn)  # ← mata gradientes con sum-agg sobre 40K nodos
-```
-El tanh satura cuando la magnitud del sum-aggregation es grande → gradiente ≈ 0 → no aprende nada.
-**REVERTIDO** a `h_attn = h_in1 + h_attn`.
-
-**Job 575904 (sin tanh, mismo MRR cero)**: el tanh NO era la causa raíz. Causa real: el config transductivo tenía **K configurado como función solo de la query** (sin la componente entity-specific W_K(h)), y el FFN estaba deshabilitado. En transductivo ambas cosas son esenciales: K entity-specific diferencia fuentes por sus representaciones acumuladas, y el FFN aprende transformaciones per-entidad. Sin ellos, los scores colapsan a función solo del tipo de relación → gradientes diluidísimos sobre 40K entidades.
-
-### Fix aplicado
-
-`configs/Exphormer/wn18rr_transduct_best.yaml`: K restaurado a W_K(h) + proj_k(r_q) (entity-specific), FFN estándar restaurado, `eval_period: 1`.
-
-Checkpoint incompatible del run anterior eliminado (`results/wn18rr_transduct_best/0/ckpt.pt`).
-
-**Job 578765** lanzado — log: `logs/wn18rr_transduct_best_578765.out`
-
-Config activo:
-```yaml
-gt:
-  layers: 5, dim_hidden: 64, use_query_conditioning: True
-optim:
-  base_lr: 0.0008, scheduler: cosine_with_warmup, num_warmup_epochs: 5
-```
-
-### Lección clave sesión 10
-
-El config transductivo requiere K = W_K(h) + proj_k(r_q) (routing entity-specific) y FFN activo. Sin la componente W_K(h) en K, el routing colapsa a función solo de la query → MRR ≈ 0.0003 en transductivo.

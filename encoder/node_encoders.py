@@ -199,12 +199,17 @@ class KGCNodeEncoder(nn.Module):
     Reads batch.query_emb set by MultiModel — no own embedding table.
 
     Args:
-        dim_emb (int):    Output embedding dimension (= gt.dim_hidden).
+        dim_emb (int):   Output embedding dimension (= gt.dim_hidden).
+        noise_std (float): Std of Gaussian noise added to non-anchor nodes during
+                           training. 0.0 disables. Breaks initial symmetry (all
+                           non-anchors start identical at zero) without requiring
+                           entity embeddings — analogous to KnowFormer's qk_x noise.
     """
 
-    def __init__(self, dim_emb: int):
+    def __init__(self, dim_emb: int, noise_std: float = 0.0):
         super().__init__()
         self.dim_emb = dim_emb
+        self.noise_std = noise_std
 
     def forward(self, batch):
         N = batch.x.shape[0]
@@ -212,6 +217,10 @@ class KGCNodeEncoder(nn.Module):
         h = torch.zeros(N, self.dim_emb, device=device)
         anchor_global = batch.ptr[:-1] + batch.anchor_idx
         h[anchor_global] = batch.query_emb  # (B, d) from MultiModel.query_rel_emb
+        if self.training and self.noise_std > 0.0:
+            noise = torch.randn_like(h) * self.noise_std
+            noise[anchor_global] = 0.0  # preserve boundary condition
+            h = h + noise
         batch.x = h
         return batch
 
@@ -229,7 +238,7 @@ def build_node_encoder(cfg, dim_in):
     dim_h = cfg.gnn.dim_inner
 
     if name == 'KGCNode':
-        return KGCNodeEncoder(dim_emb=dim_h)
+        return KGCNodeEncoder(dim_emb=dim_h, noise_std=getattr(cfg.gt, 'noise_std', 0.0))
 
     elif name == 'LinearNode':
         return LinearNodeEncoder(dim_in, dim_h)

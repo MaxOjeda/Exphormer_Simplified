@@ -65,8 +65,8 @@ cfg.gt.attn_dropout = 0.0
 cfg.gt.layer_norm = False
 cfg.gt.batch_norm = True
 cfg.gt.dim_edge = None             # None → will be set equal to dim_hidden
-cfg.gt.use_query_conditioning = False   # enables KGC mode: Q/K/E conditioned on r_q + V gate(r_uv, r_q)
-cfg.gt.use_film_e = True                # FiLM conditioning on edge features: E *= (1 + proj_e(c_q))
+cfg.gt.use_query_conditioning = False   # enables KGC mode: Q/K conditioned on r_q + V gate(r_uv, r_q)
+cfg.gt.noise_std = 0.0                 # Gaussian noise std for non-anchor nodes at init (0.0 = disabled)
 cfg.gt.pna_degrees = []
 cfg.gt.bigbird = CN()              # kept for compat but not used
 cfg.gt.bigbird.attention_type = 'block_sparse'

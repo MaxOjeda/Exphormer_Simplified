@@ -1,0 +1,86 @@
+dataset:
+  format: KGC
+  name: WN18RR-ind-v1
+  dir: ./datasets
+  task: link_pred
+  task_type: kgc_ranking
+  node_encoder: True
+  node_encoder_name: KGCNode
+  node_encoder_bn: False
+  edge_encoder: True
+  edge_encoder_name: RelationEmbedding
+  edge_encoder_bn: False
+
+kgc:
+  reciprocal: True
+  subgraph_hops: 2
+  max_nodes: 500
+  eval_full_graph: True
+  eval_batch_size: 32
+  train_full_graph: True
+  train_batch_size: 8
+  train_steps_per_epoch: 1353
+  label_smoothing: 0.0
+
+gt:
+  layer_type: Exphormer
+  layers: 5
+  n_heads: 4
+  dim_hidden: 64
+  dim_edge: 64
+  dropout: 0.1
+  attn_dropout: 0.1
+  layer_norm: True
+  batch_norm: False
+  use_query_conditioning: True
+
+gnn:
+  head: kgc
+  layers_pre_mp: 0
+  layers_post_mp: 0
+  dim_inner: 64
+  dropout: 0.1
+
+prep:
+  exp: True
+  exp_deg: 3
+  exp_algorithm: Random-d
+  exp_max_num_iters: 100
+  exp_check_spectral: False
+  add_edge_index: True
+  num_virt_node: 0
+
+posenc_LapPE:
+  enable: False
+posenc_EquivStableLapPE:
+  enable: False
+
+optim:
+  optimizer: adamW
+  base_lr: 0.0008
+  weight_decay: 1.0e-4
+  max_epoch: 30
+  scheduler: cosine_with_warmup
+  num_warmup_epochs: 10
+  clip_grad_norm: True
+
+train:
+  batch_size: 256
+  eval_period: 1
+  ckpt_period: 10
+  enable_ckpt: True
+  ckpt_best: True
+  ckpt_monitor_split: val
+  grad_checkpoint: False
+
+model:
+  type: MultiModel
+  loss_fun: cross_entropy
+
+metric_best: mrr
+metric_agg: argmax
+
+wandb:
+  use: False
+  entity: maxojeda
+  project: exphormer-kgc

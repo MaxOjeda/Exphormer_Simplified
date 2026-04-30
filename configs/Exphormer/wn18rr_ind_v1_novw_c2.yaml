@@ -1,6 +1,6 @@
 dataset:
   format: KGC
-  name: WN18RR
+  name: WN18RR-ind-v1
   dir: ./datasets
   task: link_pred
   task_type: kgc_ranking
@@ -16,10 +16,10 @@ kgc:
   subgraph_hops: 2
   max_nodes: 500
   eval_full_graph: True
-  eval_batch_size: 8
+  eval_batch_size: 32
   train_full_graph: True
-  train_batch_size: 16
-  train_steps_per_epoch: 10854
+  train_batch_size: 8
+  train_steps_per_epoch: 1353
   label_smoothing: 0.0
 
 gt:
@@ -33,7 +33,6 @@ gt:
   layer_norm: True
   batch_norm: False
   use_query_conditioning: True
-  use_film_e: False
 
 gnn:
   head: kgc
@@ -60,9 +59,9 @@ optim:
   optimizer: adamW
   base_lr: 0.0008
   weight_decay: 1.0e-4
-  max_epoch: 100
+  max_epoch: 30
   scheduler: cosine_with_warmup
-  num_warmup_epochs: 5
+  num_warmup_epochs: 3
   clip_grad_norm: True
 
 train:
@@ -72,7 +71,7 @@ train:
   enable_ckpt: True
   ckpt_best: True
   ckpt_monitor_split: val
-  grad_checkpoint: True
+  grad_checkpoint: False
 
 model:
   type: MultiModel

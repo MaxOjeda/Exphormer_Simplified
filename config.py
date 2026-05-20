@@ -66,7 +66,10 @@ cfg.gt.layer_norm = False
 cfg.gt.batch_norm = True
 cfg.gt.dim_edge = None             # None → will be set equal to dim_hidden
 cfg.gt.use_query_conditioning = False   # enables KGC mode: Q/K conditioned on r_q + V gate(r_uv, r_q)
+cfg.gt.use_ffn = True                  # C4: set False to remove the FFN block from MultiLayer
 cfg.gt.noise_std = 0.0                 # Gaussian noise std for non-anchor nodes at init (0.0 = disabled)
+cfg.gt.qk_noise_std = 4.0              # Step 1: scalar noise std injected into Q/K stream (KnowFormer uses 4.0)
+cfg.gt.num_qk_layers = 2               # Step 1: number of NBF iterations in the Q/K stream
 cfg.gt.pna_degrees = []
 cfg.gt.bigbird = CN()              # kept for compat but not used
 cfg.gt.bigbird.attention_type = 'block_sparse'

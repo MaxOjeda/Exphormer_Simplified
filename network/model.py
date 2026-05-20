@@ -162,7 +162,8 @@ class GlobalModel(nn.Module):
 
     def __init__(self, dim_h, num_heads, dropout=0.0, attn_dropout=0.0,
                  layer_norm=False, batch_norm=True, exp_edges_cfg=None,
-                 use_query_conditioning=False, num_relations=None):
+                 use_query_conditioning=False, num_relations=None,
+                 qk_noise_std=4.0, num_qk_layers=2):
         super().__init__()
         self.dim_h = dim_h
         self.layer_norm = layer_norm
@@ -174,7 +175,9 @@ class GlobalModel(nn.Module):
             use_bias=False,
             use_virt_nodes=use_virt,
             use_query_conditioning=use_query_conditioning,
-            num_relations=num_relations)
+            num_relations=num_relations,
+            qk_noise_std=qk_noise_std,
+            num_qk_layers=num_qk_layers)
 
         if layer_norm and batch_norm:
             raise ValueError("Cannot use both layer_norm and batch_norm.")
@@ -212,12 +215,14 @@ class MultiLayer(nn.Module):
     def __init__(self, dim_h, model_types, num_heads,
                  equivstable_pe=False, dropout=0.0, attn_dropout=0.0,
                  layer_norm=False, batch_norm=True, exp_edges_cfg=None,
-                 use_query_conditioning=False, num_relations=None):
+                 use_query_conditioning=False, num_relations=None, use_ffn=True,
+                 qk_noise_std=4.0, num_qk_layers=2):
         super().__init__()
         self.dim_h = dim_h
         self.layer_norm = layer_norm
         self.batch_norm = batch_norm
         self.model_types = model_types
+        self.use_ffn = use_ffn
 
         models = []
         for layer_spec in model_types:
@@ -239,7 +244,9 @@ class MultiLayer(nn.Module):
                     layer_norm=layer_norm, batch_norm=batch_norm,
                     exp_edges_cfg=exp_edges_cfg,
                     use_query_conditioning=use_query_conditioning,
-                    num_relations=num_relations))
+                    num_relations=num_relations,
+                    qk_noise_std=qk_noise_std,
+                    num_qk_layers=num_qk_layers))
             elif layer_type in ('CustomGatedGCN', 'GCN', 'GINE', 'GAT'):
                 models.append(LocalModel(
                     dim_h=dim_h, local_gnn_type=layer_type,
@@ -251,15 +258,16 @@ class MultiLayer(nn.Module):
 
         self.models = nn.ModuleList(models)
 
-        # 2-layer Feed-Forward block (always active)
-        self.ff_linear1 = nn.Linear(dim_h, dim_h * 2)
-        self.ff_linear2 = nn.Linear(dim_h * 2, dim_h)
-        if layer_norm:
-            self.norm2 = nn.LayerNorm(dim_h)
-        if batch_norm:
-            self.norm2 = nn.BatchNorm1d(dim_h)
-        self.ff_dropout1 = nn.Dropout(dropout)
-        self.ff_dropout2 = nn.Dropout(dropout)
+        if use_ffn:
+            # 2-layer Feed-Forward block (C4: disabled when use_ffn=False).
+            self.ff_linear1 = nn.Linear(dim_h, dim_h * 2)
+            self.ff_linear2 = nn.Linear(dim_h * 2, dim_h)
+            if layer_norm:
+                self.norm2 = nn.LayerNorm(dim_h)
+            if batch_norm:
+                self.norm2 = nn.BatchNorm1d(dim_h)
+            self.ff_dropout1 = nn.Dropout(dropout)
+            self.ff_dropout2 = nn.Dropout(dropout)
 
     def forward(self, batch):
         h_out_list = []
@@ -268,21 +276,19 @@ class MultiLayer(nn.Module):
 
         h = sum(h_out_list)
 
-        # FFN
-        h = h + self.ff_dropout2(
-            self.ff_linear2(
-                self.ff_dropout1(F.relu(self.ff_linear1(h)))))
+        if self.use_ffn:
+            h = h + self.ff_dropout2(
+                self.ff_linear2(
+                    self.ff_dropout1(F.relu(self.ff_linear1(h)))))
+            if self.layer_norm:
+                h = self.norm2(h)
+            if self.batch_norm:
+                h = self.norm2(h)
 
-        if self.layer_norm:
-            h = self.norm2(h)
-        if self.batch_norm:
-            h = self.norm2(h)
-
-        # Bellman-Ford residual: re-inject initial representation at each layer.
-        # x0_anchor = rel_emb_enc[r_q], x0_others = 0 → anchor signal maintained.
+        # V-NBF v5: BF residual restored — anchor=1.0 (constant) in v_x so BF path
+        # (query_rel_emb→x0→h) and NBF path (query_rel_emb→fc_z→V) are separate.
         if hasattr(batch, 'x0'):
             h = h + batch.x0
-
         batch.x = h
         return batch
 
@@ -346,7 +352,10 @@ class MultiModel(nn.Module):
                 batch_norm=cfg.gt.batch_norm,
                 exp_edges_cfg=cfg.prep,
                 use_query_conditioning=use_query_cond,
-                num_relations=_layer_num_rel)
+                num_relations=_layer_num_rel,
+                use_ffn=getattr(cfg.gt, 'use_ffn', True),
+                qk_noise_std=getattr(cfg.gt, 'qk_noise_std', 4.0),
+                num_qk_layers=getattr(cfg.gt, 'num_qk_layers', 2))
             for _ in range(cfg.gt.layers)
         ])
 

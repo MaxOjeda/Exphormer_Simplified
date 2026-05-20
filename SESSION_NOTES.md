@@ -11,6 +11,300 @@
 
 ---
 
+## Estado actual — 2026-05-05 (sesión 29): Q/K stream falla — análisis honesto del patrón de 5 sesiones
+
+Tienes razón. Voy a ser honesto en vez de proponer otra "solución".
+
+### Lo que muestran los datos del log 599923
+
+| ep | LR | val MRR | test MRR |
+|----|-----|---------|----------|
+| 0 | 0 | 0.004 | 0.018 |
+| **1** | 1e-5 | **0.237** | **0.335** |
+| 2 | 2e-5 | 0.225 | 0.307 |
+| 3 | 3e-5 | 0.237 | 0.298 (best por val) |
+| 4 | 4e-5 | 0.207 | 0.213 |
+| 5 | 5e-5 | 0.191 | 0.166 |
+| 6 | 6e-5 | 0.175 | 0.134 |
+| 7 | 7e-5 | 0.186 | 0.152 |
+
+**Mejor test 0.335 al ep1, luego colapso. Peor que el 0.58 baseline.** Mi predicción de 0.65+ fue incorrecta.
+
+### La verdad incómoda que llevamos 5 sesiones evitando
+
+Mira el patrón a lo largo de todas tus sesiones:
+
+| Arquitectura | Mejor ep | Mejor test MRR |
+|---|---|---|
+| K=proj_k(q) only (simple, sesión 5) | ep4 | **0.578** |
+| novw (sin W_V, gate aditivo) sesión 23 | ep1 | **0.5802** |
+| novw + C2 bilinear | ep1 | 0.4315 |
+| V-NBF v1/v2 | varios | 0.13-0.40 |
+| V-NBF v4 (smoke test only) | — | — |
+| **+ Q/K stream (esta)** | ep1 | **0.335** |
+
+**Cada "mejora" arquitectónica con más capacidad ha sido peor que las versiones simples**. No es un caso aislado, es el patrón consistente de las últimas 5 sesiones.
+
+Y el patrón de colapso ep1→ep2 también es invariante. Está en TODAS las arquitecturas. Eso significa que el colapso no lo causa V, ni Q/K, ni el gate, ni el FFN. Lo causa **algo común a todas las configs** — y mis análisis arquitectónicos han estado mirando el lugar equivocado durante 5 sesiones.
+
+### Lo que NBFNet hace que invalida mi última teoría
+
+Mi argumento del "Paso 1" decía que Q/K constantes eran el problema. Pero **NBFNet no tiene Q/K en absoluto** — es solo `BellmanFord(DistMult, sum)`. Y obtiene 0.741. Más simple que la 0.58 tuya. Si el problema fuera Q/K, NBFNet no llegaría tan alto. Mi diagnóstico era plausible pero estructuralmente no se sostenía.
+
+### Qué propongo ahora — y NO es otra modificación a ciegas
+
+Propongo cambiar el método, no la arquitectura. Tres pasos concretos:
+
+**1. Volver al baseline 0.58 verificado.** Identificar el commit exacto (`0466cde` "trans MRR 0.566" o uno cercano) que da 0.58 inductivo. Lanzar un run para confirmar que sigue dando 0.58 en el código actual o en checkout. Esto fija el suelo. Sin un baseline reproducible no podemos medir nada.
+
+**2. Instrumentar el colapso.** En el run de baseline, registrar epoch a epoch:
+- `||W||_2` por capa (¿qué pesos crecen explosivamente?)
+- Distribución de scores de atención (¿se saturan al clamp ±5?)
+- Magnitud de `h` por nodo en train graph vs test graph (¿hay distribution shift visible?)
+- Top-10 nodos predichos para 10 queries fijas a lo largo de épocas (¿qué cambia entre ep1 que va bien y ep3 que ya está cayendo?)
+
+Sin estos datos cualquier teoría es especulación. Llevamos 5 sesiones especulando.
+
+**3. Decidir basándose en los datos.** Solo después de tener instrumentación, cualquier cambio arquitectónico tiene una hipótesis testeable concreta — no "creo que esto funciona porque KnowFormer hace algo parecido".
+
+### Cosas que probablemente NO son el problema (y quitar de la lista)
+
+- Q/K constantes (NBFNet no las tiene y funciona)
+- Estructura del V (V-RMPNN, V-NBF, V plain — todas colapsan)
+- BF residual presence/absence (sesión 25 confirmó que ambos colapsan)
+- Gate aditivo vs bilineal (C2 empeoró, sin C2 también colapsa)
+
+### Cosas que NO hemos investigado seriamente
+
+- **Loss function**: usas full-graph CE sobre 2746 nodos. NBFNet usa negative sampling (típicamente 32-64 negativos). KnowFormer usa neg sampling. **No hay paper KGC inductivo que use full-graph CE**. Esto puede estar generando un gradiente patológico cuando LR sube — el modelo intenta empujar las 2745 puntuaciones no-anchor a -∞ y rompe la representación.
+- **LR schedule peak**: cosine sube de 1e-5 (warmup) a 1e-4 (peak). El colapso siempre ocurre cuando LR alcanza peak. ¿Es coincidencia, o es la verdadera causa? Un run con LR constante = 1e-5 confirmaría esto en una corrida.
+- **Drop direct edges**: NBFNet documenta que ESTO es lo que evita memorización. ¿Está implementado correctamente en tu trainer? No lo he verificado.
+
+¿Quieres que parta por (a) verificar que el drop direct edges está bien hecho — un grep rápido al trainer — y (b) lanzar un run con LR constante = 1e-5 sobre el baseline 0.58? Son dos diagnósticos que pueden contradecir o validar mi sospecha actual sin tocar arquitectura. Si LR constante no colapsa, el problema es schedule, no estructura. Si drop edges está mal, eso solo puede explicar mucho.
+
+Si prefieres revertir lo del Q/K stream y dejar el código como estaba antes de hoy, dime y lo hago primero.
+
+---
+
+## Estado actual — 2026-05-02 (sesión 28): V-NBF v4 (KnowFormer-aligned) implementado — smoke test OK
+
+### Implementación
+
+Todos los cambios derivados directamente del análisis del código KnowFormer (`analisis_vnbf_vs_knowformer.md`).
+
+**`layer/exphormer.py`** — `ExphormerAttention`:
+- Eliminado `batch.v_x_state` (chaining entre outer layers) — V ahora arranca desde ceros frescos cada outer layer
+- Anchor: `v_x[anchor] = 1.0` (one-hot estructural) en lugar de `= query_emb`
+- Agregado `self.fc_v_x = nn.Linear(in_dim * 2, in_dim, bias=False)` — mezcla h acumulado con v_x
+- Agregado `self.v_nbf2 = VLayerNBF(in_dim, num_relation_slots)` — segunda iteración NBF interna
+- Forward V-NBF:
+  ```python
+  v_x = h.new_zeros(num_node, d)            # fresh zeros
+  v_x[anchor_global] = 1.0                  # one-hot estructural
+  v_x = fc_v_x(cat([h[:num_node], v_x], -1)) # mix con h
+  v_x = v_nbf(v_x, edges, rels, q, eg)     # 1ª iteración
+  v_x = v_nbf2(v_x, edges, rels, q, eg)    # 2ª iteración
+  ```
+
+**`network/model.py`** — `MultiLayer.forward()`:
+- Eliminado BF residual `h = h + batch.x0`
+- Comentario actualizado explicando por qué: ruta de gradiente multiplicativa causaba colapso ep1→ep2
+
+**Params**: 1,407,553 (vs 977,473 previo; +430K por fc_v_x × 5 + v_nbf2 × 5)
+
+**Smoke test**: exit 0, ep0 test MRR=0.017 (random, esperado — sin BF residual y fc_v_x sin entrenar no hay señal gratis)
+
+**Config y script**:
+- `configs/Exphormer/wn18rr_ind_v1_vnbf4_lr1e4.yaml` — idéntico a vnbf3 (L=5, d=64, lr=1e-4, wu=10, 30 ep)
+- `sbatch_wn18rr_ind_v1_vnbf4_lr1e4.sh` — 1 H100, 12h
+
+### Por qué estos cambios (vs. V-NBF v1/v2 fallidos)
+
+| Problema en v1/v2 | Solución en v4 |
+|---|---|
+| V encadenado entre outer layers (acumula entidades) | V desde zeros frescos cada outer layer |
+| `v_x[anchor] = query_emb` → triple ruta de gradiente | `v_x[anchor] = 1.0` → single ruta (via fc_z) |
+| Sin mezcla con h | `fc_v_x(cat([h, v_x]))` |
+| Solo 1 iteración NBF | 2 iteraciones (como KnowFormer num_v_layer=2) |
+| BF residual activo | Eliminado |
+
+### Resultados de V-NBF v1/v2 (sesiones 26-27, para no repetir)
+
+| Job | Versión | Mejor test MRR | Motivo del fallo |
+|-----|---------|----------------|-----------------|
+| 597371 | vnbf (lr=8e-4) | 0.133 | colapso inmediato |
+| 597378 | vnbf (lr=1e-4, no chained) | 0.334 | colapso ep2+ |
+| 597380 | vnbf2 (lr=1e-4, chained) | 0.396 | colapso ep2+ |
+| 597381 | vnbf2_d32 | 0.213 | cancelado |
+
+Causa raíz documentada en `analisis_vnbf_vs_knowformer.md`.
+
+### Próximos pasos (si vnbf4 supera 0.5802)
+1. Probar con lr=8e-4 (schedule original que dio 0.5802)
+2. Probar en WN18RR ind v2, v3, v4
+3. Versión d=32 para comparación de capacidad
+
+---
+
+## Estado actual — 2026-04-30 (sesión 26): V-NBF stream implementado — smoke test OK
+
+### Implementación
+
+**Cambio arquitectónico central**: V ya no es `h^{t-1}` (acumulado). Se reemplazó por un NBF stream fresco cada outer layer + eliminación del BF residual.
+
+**`layer/exphormer.py`** — nueva clase `VLayerNBF` + cambios en `ExphormerAttention`:
+- `VLayerNBF(d, num_relation_slots)`: scatter DistMult en 1 iteración sobre KG∪Expander
+  - `fc_z`: Linear(d, (R+1)*d, bias=False) — factor de query por relación, std=0.01
+  - `forward`: `out[v] = Σ_{(u,r,v)} fc_z(q).view(B,R+1,d)[b,r] ⊙ v_x[u]`
+- `ExphormerAttention.__init__`: reemplazado `self.norm_V` (C3 eliminado) por `self.v_nbf = VLayerNBF(in_dim, num_relation_slots)`
+- `ExphormerAttention.forward`: V-NBF stream dentro del bloque `use_query_conditioning`:
+  ```python
+  v_x = zeros(num_node, d)
+  v_x[anchor_global] = query_emb   # fresh cada outer layer
+  v_x = self.v_nbf(v_x, edge_index, batch.edge_rel_idx, query_emb, edge_graph)
+  V_h = v_x
+  ```
+
+**`network/model.py`** — `MultiLayer.forward()`:
+- Eliminado BF residual: `if hasattr(batch, 'x0'): h = h + batch.x0` → removido
+- Comentario actualizado: "BF residual removed — anchor re-injected fresh via VLayerNBF"
+
+**Params**: 977,473 (novw+C2 base 588K + 5 × VLayerNBF 78K = exacto)
+
+**Smoke test**: exit 0, loss=7.92 @ ep0, eval corre sin errores.
+
+**Config y script**:
+- `configs/Exphormer/wn18rr_ind_v1_vnbf.yaml` — idéntico a novw_c1 (L=5, d=64, lr=8e-4, wu=3, 30 ep)
+- `sbatch_wn18rr_ind_v1_vnbf.sh` — 1 H100, 12h
+
+### Invariantes preservados
+- Q, K: anclados a x0 (boundary condition relacional, C1)
+- Gate: bilinear (r_uv × r_q), C2
+- Atención dispersa O(|V|+|E|) sobre KG∪Expander
+- FFN activo (C4 descartado — demostró que FFN da estabilidad)
+
+### Qué cambió respecto a todo lo anterior
+| Componente | Antes (C1+C2) | Ahora (V-NBF) |
+|---|---|---|
+| V | `norm_V(h^{t-1})` | `VLayerNBF(zeros+anchor_fresh, KG∪Exp, q)` |
+| Anchor injection | KGCNodeEncoder (una vez) + BF residual cada capa | KGCNodeEncoder (x0 para Q/K) + fresco en V-NBF cada capa |
+| BF residual | `h += x0` al final de cada MultiLayer | **eliminado** |
+
+### Próximos pasos (si V-NBF supera 0.5802)
+1. Añadir mezcla con x acumulado: `v_x = fc_v_in(cat([x, v_x_zeros]))` antes del scatter
+2. Aumentar a 2 iteraciones NBF internas
+3. Probar en WN18RR inductivo v2, v3, v4
+
+---
+
+## Estado actual — 2026-04-30 (sesión 25): C1+C2+C3+C4 todos fallan — re-diagnóstico estructural profundo
+
+### Resumen ejecutivo
+
+Se implementaron y testearon los 4 cambios propuestos en `diagnostico_solucion_inductivo.md`. **Ninguno mejoró el baseline novw (0.5802 test MRR)**. El análisis post-fallo identificó que el diagnóstico previo era incorrecto en su premisa: la causa raíz no es `K(h)` ni el FFN ni el gate aditivo — es `V = h^{t-1}` combinado con el BF residual `h += x0`.
+
+### Implementaciones de esta sesión
+
+**C1 (`layer/exphormer.py`):**
+```python
+# Antes: K_h = self.K(h)
+K_h = self.K(h_q)  # C1: anchored to x0, not h — eliminates entity-specific routing
+```
+`h_q = x0` cuando `use_query_conditioning=True` y `batch.x0` existe. Con esto K nunca lee `h^{t-1}`.
+
+**C2**: ya estaba en el código desde sesión 24 (gate bilinear `gate_base[r] + fc_zq(q)[r]`). C1+C2 se testean juntos.
+
+**C3 (`layer/exphormer.py`, `__init__`):**
+```python
+self.norm_V = nn.LayerNorm(in_dim, elementwise_affine=False)
+# forward:
+V_h = self.norm_V(h) if self.use_query_conditioning else self.V(h)
+```
+Pre-LayerNorm sobre V (sin affine, relational-safe). Objetivo: acotar magnitud del gate bilinear chain.
+
+**C4 (`network/model.py`, `config.py`):**
+- `cfg.gt.use_ffn = True` (nuevo flag en config)
+- `MultiLayer.__init__` acepta `use_ffn=True`; si False, no crea ni aplica el bloque FFN
+- `MultiModel` pasa `use_ffn=getattr(cfg.gt, 'use_ffn', True)` a cada MultiLayer
+
+**Configs y scripts creados:**
+- `configs/Exphormer/wn18rr_ind_v1_novw_c1.yaml` (C1+C2)
+- `configs/Exphormer/wn18rr_ind_v1_novw_c1c3.yaml` (C1+C2+C3)
+- `configs/Exphormer/wn18rr_ind_v1_novw_c1c4.yaml` (C1+C2+C4, `use_ffn: False`)
+- `sbatch_wn18rr_ind_v1_novw_c1.sh`, `c1c3.sh`, `c1c4.sh`
+
+### Resultados
+
+| Run | Job | Config | ep1 val | ep2 val (best) | ep2 test | ep3 val | nota |
+|-----|-----|--------|---------|----------------|----------|---------|------|
+| baseline novw | 596512 | novw | 0.4803 | — | **0.5802** | colapso | sesión 23 |
+| C1+C2 | 597127 | novw_c1 | 0.3995 | **0.4245** | **0.5191** | 0.2788 | colapso ep3 |
+| C1+C2+C3 | 597128 | novw_c1c3 | ~0.40 | **0.4245** | **0.5191** | colapso | cancelado ep7 |
+| C1+C2+C4 | 597132 | novw_c1c4 | — | **0.4339** | — | colapso ep2 | cancelado |
+
+**Ninguna combinación superó 0.5802.** Patrón de colapso idéntico en todos: pico ep1-2 durante warmup, caída catastrófica al alcanzar LR peak (ep3, LR=8e-4).
+
+- C3 (pre-LN sobre V): doble normalización. MultiLayer ya tiene LayerNorm post-attention; agregar otra antes quita escala que el BF residual usa para distinguir distancia del anchor.
+- C4 (no FFN): colapso más temprano (ep2 vs ep3). FFN da estabilidad dinámica, no solo memoriza entidades.
+- C1 (K relacional pura): no movió nada porque V = h^{t-1} sigue siendo entity-accumulated.
+
+### Re-diagnóstico estructural — causa raíz
+
+**La premisa del diagnóstico anterior estaba equivocada.** `diagnostico_solucion_inductivo.md` identificaba `K(h)`, `FFN(h)`, y el gate aditivo como los violadores. Pero C1 eliminó `K(h)` y no hubo mejora. Razón: **V sigue siendo `h^{t-1}`**.
+
+Análisis de KnowFormer (código real, `Knowformer/src/model.py`):
+
+1. **KnowFormer NO tiene BF residual** (`h += x0`). Nosotros sí, en `MultiLayer.forward()`. Diferencia estructural fundamental no identificada antes.
+2. **KnowFormer arranca con `x = 0` global**, sin INDICATOR al inicio. El head se inyecta **fresco cada outer layer** vía `v_x[h_index] = 1` (one-hot), no vía residual.
+3. **Q, K, V vienen de NBF streams frescos**, no de `h` acumulado. Cada outer layer lanza dos NBF internos (2 iteraciones) desde ceros, mezclan `x` como contexto solo en el primer paso.
+
+Nuestro flujo post-C1:
+```
+Q = W_Q(x0) + proj_q(q)   # relacional puro ✓
+K = W_K(x0) + proj_k(q)   # relacional puro ✓ (C1)
+V = h^{t-1}                # ← CAUSA RAIZ: entity-accumulated, no relacional
+h^t = h^t + x0             # ← AGRAVA: BF residual refuerza patrones train-específicos
+```
+
+`V = h^{t-1}` transfiere patrones de entidades del grafo de train. El BF residual `h += x0` los refuerza cada capa. C1-C4 trataron síntomas; la raíz es V.
+
+Previo intento V-RMPNN (sesión 14, 0.513) falló porque mantuvo el BF residual: dos mecanismos de inyección del anchor (V-NBF fresco vs BF residual con x0 fijo) se contradicen, el optimizer no los reconcilia.
+
+### Solución propuesta (próximo paso)
+
+**V-NBF stream con fresh anchor injection cada outer layer, eliminar BF residual.**
+
+Pseudocódigo del cambio central:
+```python
+# Cada outer layer:
+v_x = zeros(N, d)
+v_x[anchor] = query_emb[batch_idx]       # FRESH cada layer (no via BF residual)
+v_x = fc_v_in(cat([x, v_x], -1))         # mezcla con x acumulado
+for nbf in v_nbf_layers:                  # 1-2 iteraciones NBF relacionales
+    v_x = nbf(v_x, edge_index, edge_attr, query_emb)
+
+Q = W_Q(x0) + proj_q(q)                  # relacional puro (C1)
+K = W_K(x0) + proj_k(q)                  # relacional puro (C1)
+attn_out = sparse_attn(Q, K, V=v_x, E, gate, edges=KG∪Expander)
+
+x = x + attn_out                          # SIN h += x0
+x = LN(x); x = x + FFN(x); x = LN(x)    # KnowFormer también tiene FFN
+```
+
+Se preserva la contribución de tesis (expander como topología de atención), el gate bilinear (C2), y la atención dispersa O(|V|+|E|).
+
+Análisis completo escrito en `analisis_arquitectura_inductivo.md`.
+
+### Archivos modificados en esta sesión
+
+- `layer/exphormer.py` — C1 (K→x0) + C3 (norm_V) + docstring actualizado
+- `network/model.py` — C4 (use_ffn flag en MultiLayer + MultiModel)
+- `config.py` — `cfg.gt.use_ffn = True`
+- `analisis_arquitectura_inductivo.md` — análisis arquitectural completo (nuevo archivo)
+- configs y sbatch: `novw_c1`, `novw_c1c3`, `novw_c1c4`
+
+---
+
 ## Estado actual — 2026-04-29 (sesión 24): C2 (gate bilinear) implementado, **falla aislado** — re-diagnóstico
 
 ### Marco metodológico (cambio de proceso)

@@ -33,6 +33,7 @@ gt:
   layer_norm: True
   batch_norm: False
   use_query_conditioning: True
+  use_edge_gating: True
 
 gnn:
   head: kgc

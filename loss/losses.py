@@ -64,6 +64,77 @@ def kgc_full_graph_ce(scores, true_tails, filter_dict, chunk_h, chunk_r,
     return loss, scores
 
 
+def kgc_bce_neg_sample(scores, true_tails, filter_dict, chunk_h, chunk_r,
+                       num_negative_sample=7, adversarial_temperature=1.0,
+                       head_filter=None, base_num_rel=None):
+    """
+    KnowFormer-style BCE loss with negative sampling + self-adversarial weighting.
+
+    Faithful port of Knowformer/lightning.py:121-149 (compute_loss, loss_fn='bce').
+    Instead of a softmax over all N entities, for each query (h, r, t):
+      1. Build a per-query filter mask of ALL known true answers, so they are never
+         sampled as negatives (the positive t included — it lives in filter_dict).
+      2. Sample K = min(N, 2**num_negative_sample) negatives uniformly from the
+         non-filtered entities, WITH replacement (matches KnowFormer's multinomial).
+      3. Gather logits over [positive, neg_1..neg_K]; BCEWithLogits with the per-
+         candidate sigmoid target [1, 0, ..., 0] (independent, no softmax).
+      4. Self-adversarial weighting (RotatE-style): negatives weighted by
+         softmax(logits_neg / temperature), DETACHED; positive weight = 1.
+         loss = (bce * weights).sum()  — summed over candidates and batch, exactly
+         as KnowFormer (so the loss scales with batch size — tune LR accordingly).
+
+    Reciprocal queries (r >= base_num_rel) use head_filter[(h, r_orig)] for the mask,
+    matching the convention in kgc_full_graph_ce.
+
+    Args:
+        scores                  (B, N)  float — raw logits from the model.
+        true_tails              (B,)    long  — global entity index of the true tail.
+        filter_dict             dict    — (h, r) -> set(all known tails).
+        chunk_h, chunk_r        list[int] — head / relation for each query.
+        num_negative_sample     int     — K = min(N, 2**num_negative_sample).
+        adversarial_temperature float   — temperature of the self-adversarial softmax.
+        head_filter             dict    — (t, r_orig) -> set(all known heads).
+        base_num_rel            int     — r >= base_num_rel ⇒ reciprocal query.
+
+    Returns:
+        (loss scalar, scores (B, N))  — scores returned unchanged for metric logging.
+    """
+    B, N = scores.shape
+    device = scores.device
+
+    # (1) Per-query filter mask: True = known true answer (never sampled as negative).
+    filter_mask = torch.zeros(B, N, dtype=torch.bool, device=device)
+    for i, (h, r, t) in enumerate(zip(chunk_h, chunk_r, true_tails.tolist())):
+        if base_num_rel is not None and r >= base_num_rel and head_filter is not None:
+            known = head_filter.get((h, r - base_num_rel), set())
+        else:
+            known = filter_dict.get((h, r), set())
+        if known:
+            idx = torch.as_tensor(list(known), device=device, dtype=torch.long)
+            filter_mask[i, idx] = True
+
+    # (2) Sample K negatives from the non-filtered entities (multinomial, w/ replacement).
+    K = min(N, 2 ** num_negative_sample)
+    p = torch.ones(B, N, device=device) * (~filter_mask)
+    negative_index = torch.multinomial(p, num_samples=K, replacement=True)   # (B, K)
+    positive_index = true_tails.to(device).long().unsqueeze(1)               # (B, 1)
+    all_index = torch.cat([positive_index, negative_index], dim=1)           # (B, 1+K)
+
+    # (3) BCE over [positive, negatives].
+    logits = torch.gather(scores, 1, all_index)        # (B, 1+K)
+    target = torch.zeros_like(logits)
+    target[:, 0] = 1.0
+    bce = F.binary_cross_entropy_with_logits(logits, target, reduction='none')
+
+    # (4) Self-adversarial weighting (detached); positive keeps weight 1.
+    weights = torch.ones_like(logits)
+    with torch.no_grad():
+        weights[:, 1:] = F.softmax(logits[:, 1:] / adversarial_temperature, dim=-1)
+    loss = (bce * weights).sum()
+
+    return loss, scores
+
+
 def compute_loss(pred, true, loss_fun):
     """
     Dispatch loss computation based on loss_fun name.

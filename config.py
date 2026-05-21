@@ -65,11 +65,8 @@ cfg.gt.attn_dropout = 0.0
 cfg.gt.layer_norm = False
 cfg.gt.batch_norm = True
 cfg.gt.dim_edge = None             # None → will be set equal to dim_hidden
-cfg.gt.use_query_conditioning = False   # enables KGC mode: Q/K conditioned on r_q + V gate(r_uv, r_q)
-cfg.gt.use_ffn = True                  # C4: set False to remove the FFN block from MultiLayer
-cfg.gt.noise_std = 0.0                 # Gaussian noise std for non-anchor nodes at init (0.0 = disabled)
-cfg.gt.qk_noise_std = 4.0              # Step 1: scalar noise std injected into Q/K stream (KnowFormer uses 4.0)
-cfg.gt.num_qk_layers = 2               # Step 1: number of NBF iterations in the Q/K stream
+cfg.gt.use_query_conditioning = False   # enables KGC mode: Q/K/E conditioned on r_q
+cfg.gt.use_edge_gating = False          # enables the relational V gate (g(r_uv, r_q), no sigmoid)
 cfg.gt.pna_degrees = []
 cfg.gt.bigbird = CN()              # kept for compat but not used
 cfg.gt.bigbird.attention_type = 'block_sparse'
@@ -223,6 +220,12 @@ cfg.kgc.train_batch_size      = 4      # queries per forward pass during full-gr
 cfg.kgc.train_steps_per_epoch = 200    # gradient steps per epoch (mini-epoch strategy)
 cfg.kgc.label_smoothing       = 0.0   # label smoothing for CE loss (0 = no smoothing)
 cfg.kgc.mlp_scorer            = False  # KnowFormer-style: MLP(cat(h,r)) scorer vs Linear(cat(h,r))
+# Training loss for full-graph KGC. 'ce' = filtered full-graph softmax CE (default,
+# all N entities as negatives). 'bce' = KnowFormer-style BCE over [1 positive +
+# K sampled negatives] with self-adversarial weighting (Knowformer/lightning.py:121-149).
+cfg.kgc.loss_fn               = 'ce'   # 'ce' | 'bce'
+cfg.kgc.num_negative_sample   = 7      # K = min(N, 2**num_negative_sample) negatives (bce only)
+cfg.kgc.adversarial_temperature = 1.0  # self-adversarial softmax temperature (bce only)
 
 # ---------------------------------------------------------------------------
 # Shared / internal (used by LapPE encoder for dim_in)

@@ -1,14 +1,17 @@
 """
-Exphormer_Max model architecture.
+Exphormer_Max model architecture (clean QC-Exphormer for KGC).
 Merges graphgps/network/multi_model.py + graphgps/layer/multi_model_layer.py.
 All graphgym dependencies removed; replaced by direct imports and if/elif dispatch.
+
+Architecture of the best transductive result (WN18RR MRR 0.566), stripped of all
+experimental flags. Relation embeddings live in per-component tables (KGCNodeEncoder,
+ExphormerAttention, ExpanderEdgeFixer, KGCHead), each indexed by batch.query_relation.
 """
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch_geometric.nn as pygnn
 from torch_geometric.data import Batch
-from torch_scatter import scatter
 
 from layer.exphormer import ExphormerAttention
 from layer.gatedgcn import GatedGCNLayer
@@ -47,8 +50,8 @@ class FeatureEncoder(nn.Module):
                 self.edge_encoder_bn = nn.BatchNorm1d(cfg.gt.dim_edge)
 
         if 'Exphormer' in cfg.gt.layer_type:
-            # num_relations in KGC mode: needed for sentinel index in batch.edge_rel_idx
-            # and for the dim_edge projection if dim_hidden != dim_edge.
+            # In KGC mode the fixer carries the query signal on expander edges
+            # (exp_edge_query_emb), so it needs num_relations.
             _is_kgc = (cfg.dataset.format == 'KGC' and cfg.dataset.num_relations > 0)
             _exp_num_rel = cfg.dataset.num_relations if _is_kgc else None
             self.exp_edge_fixer = ExpanderEdgeFixer(
@@ -162,22 +165,20 @@ class GlobalModel(nn.Module):
 
     def __init__(self, dim_h, num_heads, dropout=0.0, attn_dropout=0.0,
                  layer_norm=False, batch_norm=True, exp_edges_cfg=None,
-                 use_query_conditioning=False, num_relations=None,
-                 qk_noise_std=4.0, num_qk_layers=2):
+                 use_edge_gating=False, use_query_conditioning=False,
+                 num_relations=None):
         super().__init__()
         self.dim_h = dim_h
         self.layer_norm = layer_norm
         self.batch_norm = batch_norm
 
         use_virt = (exp_edges_cfg is not None and exp_edges_cfg.num_virt_node > 0)
-        self.self_attn = ExphormerAttention(
-            dim_h, dim_h, num_heads,
-            use_bias=False,
-            use_virt_nodes=use_virt,
-            use_query_conditioning=use_query_conditioning,
-            num_relations=num_relations,
-            qk_noise_std=qk_noise_std,
-            num_qk_layers=num_qk_layers)
+        self.self_attn = ExphormerAttention(dim_h, dim_h, num_heads,
+                                            use_bias=False,
+                                            use_virt_nodes=use_virt,
+                                            use_edge_gating=use_edge_gating,
+                                            use_query_conditioning=use_query_conditioning,
+                                            num_relations=num_relations)
 
         if layer_norm and batch_norm:
             raise ValueError("Cannot use both layer_norm and batch_norm.")
@@ -206,8 +207,8 @@ class GlobalModel(nn.Module):
 
 class MultiLayer(nn.Module):
     """
-    Combines one or more local/global sub-models per layer,
-    followed by a 2-layer Feed-Forward block.
+    Combines one or more local/global sub-models per layer, followed by a
+    shared 2-layer Feed-Forward block and the Bellman-Ford residual.
 
     gt.layer_type is a '+'-separated string, e.g. 'CustomGatedGCN+Exphormer'.
     """
@@ -215,17 +216,17 @@ class MultiLayer(nn.Module):
     def __init__(self, dim_h, model_types, num_heads,
                  equivstable_pe=False, dropout=0.0, attn_dropout=0.0,
                  layer_norm=False, batch_norm=True, exp_edges_cfg=None,
-                 use_query_conditioning=False, num_relations=None, use_ffn=True,
-                 qk_noise_std=4.0, num_qk_layers=2):
+                 use_edge_gating=False, use_query_conditioning=False,
+                 num_relations=None):
         super().__init__()
         self.dim_h = dim_h
         self.layer_norm = layer_norm
         self.batch_norm = batch_norm
         self.model_types = model_types
-        self.use_ffn = use_ffn
 
         models = []
         for layer_spec in model_types:
+            # Parse edge type suffix: 'Type__edge_attr_type__edge_type'
             parts = layer_spec.split('__')
             if len(parts) == 3:
                 layer_type, edge_type, edge_attr_type = parts
@@ -233,8 +234,8 @@ class MultiLayer(nn.Module):
                 layer_type, edge_type = parts
                 edge_attr_type = None
             else:
-                layer_type    = parts[0]
-                edge_type     = 'edge_index'
+                layer_type = parts[0]
+                edge_type = 'edge_index'
                 edge_attr_type = 'edge_attr'
 
             if layer_type == 'Exphormer':
@@ -243,10 +244,9 @@ class MultiLayer(nn.Module):
                     dropout=dropout, attn_dropout=attn_dropout,
                     layer_norm=layer_norm, batch_norm=batch_norm,
                     exp_edges_cfg=exp_edges_cfg,
+                    use_edge_gating=use_edge_gating,
                     use_query_conditioning=use_query_conditioning,
-                    num_relations=num_relations,
-                    qk_noise_std=qk_noise_std,
-                    num_qk_layers=num_qk_layers))
+                    num_relations=num_relations))
             elif layer_type in ('CustomGatedGCN', 'GCN', 'GINE', 'GAT'):
                 models.append(LocalModel(
                     dim_h=dim_h, local_gnn_type=layer_type,
@@ -258,42 +258,44 @@ class MultiLayer(nn.Module):
 
         self.models = nn.ModuleList(models)
 
-        if use_ffn:
-            # 2-layer Feed-Forward block (C4: disabled when use_ffn=False).
-            self.ff_linear1 = nn.Linear(dim_h, dim_h * 2)
-            self.ff_linear2 = nn.Linear(dim_h * 2, dim_h)
-            if layer_norm:
-                self.norm2 = nn.LayerNorm(dim_h)
-            if batch_norm:
-                self.norm2 = nn.BatchNorm1d(dim_h)
-            self.ff_dropout1 = nn.Dropout(dropout)
-            self.ff_dropout2 = nn.Dropout(dropout)
+        # Feed-Forward block: 2-layer MLP with inner dim 2*dim_h.
+        self.ff_linear1 = nn.Linear(dim_h, dim_h * 2)
+        self.ff_linear2 = nn.Linear(dim_h * 2, dim_h)
+        if layer_norm:
+            self.norm2 = nn.LayerNorm(dim_h)
+        if batch_norm:
+            self.norm2 = nn.BatchNorm1d(dim_h)
+        self.ff_dropout1 = nn.Dropout(dropout)
+        self.ff_dropout2 = nn.Dropout(dropout)
 
     def forward(self, batch):
-        h_out_list = []
-        for model in self.models:
-            h_out_list.append(model(batch))
+        h_out_list = [model(batch) for model in self.models]
 
+        # Sum all sub-model outputs
         h = sum(h_out_list)
 
-        if self.use_ffn:
-            h = h + self.ff_dropout2(
-                self.ff_linear2(
-                    self.ff_dropout1(F.relu(self.ff_linear1(h)))))
-            if self.layer_norm:
-                h = self.norm2(h)
-            if self.batch_norm:
-                h = self.norm2(h)
+        # Feed-Forward block
+        h = h + self._ff_block(h)
+        if self.layer_norm:
+            h = self.norm2(h)
+        if self.batch_norm:
+            h = self.norm2(h)
 
-        # V-NBF v5: BF residual restored — anchor=1.0 (constant) in v_x so BF path
-        # (query_rel_emb→x0→h) and NBF path (query_rel_emb→fc_z→V) are separate.
+        # Bellman-Ford residual: re-inject initial representation at each layer.
+        # Equivalent to +h(0)_v in the generalised Bellman-Ford update —
+        # ensures the source node retains the query signal across all layers.
         if hasattr(batch, 'x0'):
             h = h + batch.x0
+
         batch.x = h
         return batch
 
+    def _ff_block(self, x):
+        x = self.ff_dropout1(F.relu(self.ff_linear1(x)))
+        return self.ff_dropout2(self.ff_linear2(x))
+
     def extra_repr(self):
-        return f'dim_h={self.dim_h}, model_types={self.model_types}'
+        return (f'dim_h={self.dim_h}, model_types={self.model_types}')
 
 
 # ---------------------------------------------------------------------------
@@ -307,21 +309,10 @@ class MultiModel(nn.Module):
 
     def __init__(self, cfg, dim_in, dim_out):
         super().__init__()
-
-        use_query_cond = getattr(cfg.gt, 'use_query_conditioning', False)
-
-        # Single canonical query-relation embedding (KGC mode only).
-        # Looked up once per forward() → batch.query_emb (B, d).
-        # All downstream modules (KGCNodeEncoder, ExphormerAttention × L,
-        # ExpanderEdgeFixer, KGCHead) read batch.query_emb and apply
-        # their own per-role linear projections. KnowFormer-style design.
-        if use_query_cond and cfg.dataset.num_relations > 0:
-            self.query_rel_emb = nn.Embedding(cfg.dataset.num_relations, cfg.gt.dim_hidden)
-            nn.init.normal_(self.query_rel_emb.weight, std=0.01)
-
         self.encoder = FeatureEncoder(cfg, dim_in)
         dim_in = self.encoder.dim_in
 
+        # Optional pre-MP linear projection
         if cfg.gnn.layers_pre_mp > 0:
             pre_mp_layers = []
             for _ in range(cfg.gnn.layers_pre_mp):
@@ -335,11 +326,11 @@ class MultiModel(nn.Module):
             (f"Model dim_in after encoder ({dim_in}) must equal gt.dim_hidden "
              f"({cfg.gt.dim_hidden}). Check node encoder output dim or layers_pre_mp.")
 
-        model_types = cfg.gt.layer_type.split('+')
-
-        # KGC mode: thread num_relations to ExphormerAttention for the bilinear gate (C2).
-        _layer_num_rel = cfg.dataset.num_relations if (use_query_cond and cfg.dataset.num_relations > 0) else None
-
+        model_types        = cfg.gt.layer_type.split('+')
+        use_query_cond     = getattr(cfg.gt, 'use_query_conditioning', False)
+        use_edge_gating    = getattr(cfg.gt, 'use_edge_gating', False)
+        # num_relations needed only for query conditioning.
+        num_relations      = cfg.dataset.num_relations if use_query_cond else None
         self.layers = nn.Sequential(*[
             MultiLayer(
                 dim_h=cfg.gt.dim_hidden,
@@ -351,70 +342,38 @@ class MultiModel(nn.Module):
                 layer_norm=cfg.gt.layer_norm,
                 batch_norm=cfg.gt.batch_norm,
                 exp_edges_cfg=cfg.prep,
+                use_edge_gating=use_edge_gating,
                 use_query_conditioning=use_query_cond,
-                num_relations=_layer_num_rel,
-                use_ffn=getattr(cfg.gt, 'use_ffn', True),
-                qk_noise_std=getattr(cfg.gt, 'qk_noise_std', 4.0),
-                num_qk_layers=getattr(cfg.gt, 'num_qk_layers', 2))
+                num_relations=num_relations)
             for _ in range(cfg.gt.layers)
         ])
 
         self.post_mp = build_head(cfg, cfg.gnn.dim_inner, dim_out)
-
         self.grad_checkpoint = getattr(cfg.train, 'grad_checkpoint', False)
 
     def forward(self, batch):
-        # Single lookup — all downstream modules read batch.query_emb (B, d).
-        query_emb = None
-        if hasattr(self, 'query_rel_emb'):
-            query_emb = self.query_rel_emb(batch.query_relation)
-            batch.query_emb = query_emb
-
         batch = self.encoder(batch)
         if hasattr(self, 'pre_mp'):
             batch.x = self.pre_mp(batch.x)
 
-        # Save initial representation h(0) for Bellman-Ford residual in each layer.
-        # x0_anchor = query_rel_emb[r_q], x0_others = 0 (set by KGCNodeEncoder).
+        # Save initial representation h(0) for the Bellman-Ford residual.
         batch.x0 = batch.x
 
         if self.training and self.grad_checkpoint:
             from torch.utils.checkpoint import checkpoint
-            # KnowFormer-style: remove query_emb from batch before the checkpoint loop
-            # and pass it as an explicit positional arg to checkpoint(). PyTorch treats
-            # explicit positional args as saved inputs (not retained activations), so
-            # a requires_grad tensor from the shared embedding doesn't get serialized
-            # across all L backward replays via the captured batch closure.
-            if query_emb is not None:
-                del batch.query_emb
-
             for layer in self.layers:
-                x_in  = batch.x
+                x_in = batch.x
                 ea_in = batch.edge_attr
 
-                if query_emb is not None:
-                    def _run(x, ea, qemb, _layer=layer, _batch=batch):
-                        _batch.x = x
-                        _batch.edge_attr = ea
-                        _batch.query_emb = qemb
-                        result = _layer(_batch)
-                        del _batch.query_emb
-                        return result.x, result.edge_attr
-                    x_out, ea_out = checkpoint(_run, x_in, ea_in, query_emb, use_reentrant=False)
-                else:
-                    def _run(x, ea, _layer=layer, _batch=batch):
-                        _batch.x = x
-                        _batch.edge_attr = ea
-                        result = _layer(_batch)
-                        return result.x, result.edge_attr
-                    x_out, ea_out = checkpoint(_run, x_in, ea_in, use_reentrant=False)
+                def _run(x, ea, _layer=layer, _batch=batch):
+                    _batch.x = x
+                    _batch.edge_attr = ea
+                    result = _layer(_batch)
+                    return result.x, result.edge_attr
 
+                x_out, ea_out = checkpoint(_run, x_in, ea_in, use_reentrant=False)
                 batch.x = x_out
                 batch.edge_attr = ea_out
-
-            # Restore for post_mp (KGCHead reads batch.query_emb).
-            if query_emb is not None:
-                batch.query_emb = query_emb
         else:
             batch = self.layers(batch)
 

@@ -19,12 +19,17 @@ kgc:
   eval_batch_size: 32
   train_full_graph: True
   train_batch_size: 8
-  train_steps_per_epoch: 1353
+  train_steps_per_epoch: 1353   # ceil(10820 / 8) — 100% coverage, 1 GPU
   label_smoothing: 0.0
+  # KnowFormer-style BCE + negative sampling + self-adversarial weighting.
+  # KnowFormer WN18RR ind v1 uses num_negative_sample=8 (→256 negs), temp=0.5.
+  loss_fn: bce
+  num_negative_sample: 8
+  adversarial_temperature: 0.5
 
 gt:
   layer_type: Exphormer
-  layers: 3
+  layers: 5
   n_heads: 4
   dim_hidden: 64
   dim_edge: 64
@@ -33,7 +38,7 @@ gt:
   layer_norm: True
   batch_norm: False
   use_query_conditioning: True
-  qk_noise_std: 4.0
+  use_edge_gating: True
 
 gnn:
   head: kgc
@@ -43,7 +48,7 @@ gnn:
   dropout: 0.1
 
 prep:
-  exp: False
+  exp: True
   exp_deg: 3
   exp_algorithm: Random-d
   exp_max_num_iters: 100
@@ -58,11 +63,11 @@ posenc_EquivStableLapPE:
 
 optim:
   optimizer: adamW
-  base_lr: 3e-5
+  base_lr: 0.0008
   weight_decay: 1.0e-4
-  max_epoch: 50
+  max_epoch: 30
   scheduler: cosine_with_warmup
-  num_warmup_epochs: 5
+  num_warmup_epochs: 3
   clip_grad_norm: True
 
 train:
@@ -71,7 +76,6 @@ train:
   ckpt_period: 10
   enable_ckpt: True
   ckpt_best: True
-  ckpt_monitor_split: val
   grad_checkpoint: False
 
 model:

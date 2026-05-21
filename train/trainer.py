@@ -415,7 +415,7 @@ def train_epoch_kgc_full(logger, model, optimizer, scheduler, cfg, dataset, cur_
                    optim.clip_grad_norm, train.max_iter.
         dataset:   KGCSplitWrapper — exposes full graph tensors and filter_dict.
     """
-    from loss.losses import kgc_full_graph_ce
+    from loss.losses import kgc_full_graph_ce, kgc_bce_neg_sample
 
     model.train()
     optimizer.zero_grad()
@@ -539,12 +539,21 @@ def train_epoch_kgc_full(logger, model, optimizer, scheduler, cfg, dataset, cur_
             data.expander_edge_index = _tile_expander(_base_exp_ei, B, N, device)
 
         pred, _ = model(data)   # (B, N)
-        loss, pred_score = kgc_full_graph_ce(
-            pred, chunk_t.to(device), filter_dict, chunk_h, chunk_r,
-            label_smoothing=getattr(cfg.kgc, 'label_smoothing', 0.0),
-            head_filter=kgc_ds.head_filter,
-            base_num_rel=kgc_ds.num_base_relations,
-        )
+        if getattr(cfg.kgc, 'loss_fn', 'ce') == 'bce':
+            loss, pred_score = kgc_bce_neg_sample(
+                pred, chunk_t.to(device), filter_dict, chunk_h, chunk_r,
+                num_negative_sample=getattr(cfg.kgc, 'num_negative_sample', 7),
+                adversarial_temperature=getattr(cfg.kgc, 'adversarial_temperature', 1.0),
+                head_filter=kgc_ds.head_filter,
+                base_num_rel=kgc_ds.num_base_relations,
+            )
+        else:
+            loss, pred_score = kgc_full_graph_ce(
+                pred, chunk_t.to(device), filter_dict, chunk_h, chunk_r,
+                label_smoothing=getattr(cfg.kgc, 'label_smoothing', 0.0),
+                head_filter=kgc_ds.head_filter,
+                base_num_rel=kgc_ds.num_base_relations,
+            )
 
         loss.backward()
 

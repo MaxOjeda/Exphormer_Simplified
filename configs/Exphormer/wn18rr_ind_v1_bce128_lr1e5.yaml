@@ -19,8 +19,13 @@ kgc:
   eval_batch_size: 32
   train_full_graph: True
   train_batch_size: 8
-  train_steps_per_epoch: 1353
+  train_steps_per_epoch: 1353   # ceil(10820 / 8) — 100% coverage, 1 GPU
   label_smoothing: 0.0
+  # KnowFormer-style BCE + negative sampling + self-adversarial weighting.
+  # 128 negatives: K = min(N, 2**num_negative_sample) = 2**7 = 128.
+  loss_fn: bce
+  num_negative_sample: 7
+  adversarial_temperature: 0.5
 
 gt:
   layer_type: Exphormer
@@ -33,7 +38,7 @@ gt:
   layer_norm: True
   batch_norm: False
   use_query_conditioning: True
-  use_ffn: False
+  use_edge_gating: True
 
 gnn:
   head: kgc
@@ -58,11 +63,11 @@ posenc_EquivStableLapPE:
 
 optim:
   optimizer: adamW
-  base_lr: 0.0008
+  base_lr: 0.00001
   weight_decay: 1.0e-4
   max_epoch: 30
   scheduler: cosine_with_warmup
-  num_warmup_epochs: 3
+  num_warmup_epochs: 8
   clip_grad_norm: True
 
 train:
@@ -71,7 +76,6 @@ train:
   ckpt_period: 10
   enable_ckpt: True
   ckpt_best: True
-  ckpt_monitor_split: val
   grad_checkpoint: False
 
 model:

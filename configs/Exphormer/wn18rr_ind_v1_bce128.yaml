@@ -21,6 +21,11 @@ kgc:
   train_batch_size: 8
   train_steps_per_epoch: 1353   # ceil(10820 / 8) — 100% coverage, 1 GPU
   label_smoothing: 0.0
+  # KnowFormer-style BCE + negative sampling + self-adversarial weighting.
+  # 128 negatives: K = min(N, 2**num_negative_sample) = 2**7 = 128.
+  loss_fn: bce
+  num_negative_sample: 7
+  adversarial_temperature: 0.5
 
 gt:
   layer_type: Exphormer

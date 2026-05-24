@@ -42,15 +42,17 @@ def _arxiv_cross_entropy(pred, true, split_idx):
 # Checkpointing
 # ---------------------------------------------------------------------------
 
-def _save_ckpt(model, optimizer, scheduler, epoch, run_dir):
+def _save_ckpt(model, optimizer, scheduler, epoch, run_dir, every_epoch=False):
     os.makedirs(run_dir, exist_ok=True)
-    ckpt_path = os.path.join(run_dir, 'ckpt.pt')
-    torch.save({
+    payload = {
         'epoch': epoch,
         'model_state_dict': _unwrap_model(model).state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
-    }, ckpt_path)
+    }
+    torch.save(payload, os.path.join(run_dir, 'ckpt.pt'))
+    if every_epoch:
+        torch.save(payload, os.path.join(run_dir, f'ckpt_epoch_{epoch:03d}.pt'))
 
 
 def _load_ckpt(model, optimizer, scheduler, run_dir, epoch_resume=-1):
@@ -683,7 +685,8 @@ def custom_train(loggers, loaders, model, optimizer, scheduler, cfg, dataset=Non
             # --- Regular checkpoint ---
             if cfg.train.enable_ckpt and not cfg.train.ckpt_best and \
                     _is_ckpt_epoch(cur_epoch, cfg.train.ckpt_period):
-                _save_ckpt(model, optimizer, scheduler, cur_epoch, cfg.run_dir)
+                _save_ckpt(model, optimizer, scheduler, cur_epoch, cfg.run_dir,
+                           every_epoch=getattr(cfg.train, 'ckpt_every_epoch', False))
 
             # --- WandB log ---
             if wandb_run is not None:
@@ -734,7 +737,8 @@ def custom_train(loggers, loaders, model, optimizer, scheduler, cfg, dataset=Non
             # whether the most recent eval produced the best result so far.
             if cfg.train.enable_ckpt and cfg.train.ckpt_best and \
                     best_epoch == len(val_perf) - 1:
-                _save_ckpt(model, optimizer, scheduler, cur_epoch, cfg.run_dir)
+                _save_ckpt(model, optimizer, scheduler, cur_epoch, cfg.run_dir,
+                           every_epoch=getattr(cfg.train, 'ckpt_every_epoch', False))
 
             best_train_loss = perf[0][best_epoch].get('loss', float('nan'))
             best_val_loss = (perf[1][best_epoch].get('loss', float('nan'))

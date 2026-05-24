@@ -376,12 +376,42 @@ if __name__ == '__main__':
         # ---- Model ----
         model = create_model(cfg, dim_in, dim_out)
         model.to(torch.device(cfg.device))
+
+        # Diagnostic: load weights from a specific checkpoint before training.
+        # Loads model_state_dict only (cold optimizer/scheduler), distinct from
+        # auto_resume which expects ckpt.pt + matching optimizer/scheduler state.
+        if getattr(cfg.train, 'start_from_ckpt', ''):
+            blob = torch.load(cfg.train.start_from_ckpt, map_location='cpu')
+            sd = blob['model_state_dict'] if 'model_state_dict' in blob else blob
+            missing, unexpected = model.load_state_dict(sd, strict=False)
+            logging.info(f'Loaded weights from {cfg.train.start_from_ckpt} '
+                         f'(missing={len(missing)} unexpected={len(unexpected)})')
+
+        # Diagnostic: freeze parameters whose name matches any regex in freeze_patterns.
+        if getattr(cfg.train, 'freeze_patterns', ''):
+            import re as _re
+            patterns = [p.strip() for p in cfg.train.freeze_patterns.split(',') if p.strip()]
+            regexes = [_re.compile(p) for p in patterns]
+            n_frozen, n_total = 0, 0
+            frozen_names = []
+            for name, p in model.named_parameters():
+                n_total += 1
+                if any(rx.search(name) for rx in regexes):
+                    p.requires_grad = False
+                    n_frozen += 1
+                    frozen_names.append(name)
+            logging.info(f'Froze {n_frozen}/{n_total} params (patterns={patterns}):')
+            for fn in frozen_names:
+                logging.info(f'  - {fn}')
+
         if is_distributed:
             model = DDP(model, device_ids=[LOCAL_RANK], find_unused_parameters=True)
             logging.info(f'DDP enabled on {dist.get_world_size()} GPUs.')
 
         # ---- Optimizer / scheduler ----
-        optimizer = build_optimizer(model.parameters(), cfg)
+        # Filter frozen params from optimizer so AdamW state for them never updates.
+        _opt_params = [p for p in model.parameters() if p.requires_grad]
+        optimizer = build_optimizer(_opt_params, cfg)
         scheduler = build_scheduler(optimizer, cfg)
 
         # ---- Param count ----

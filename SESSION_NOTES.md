@@ -11,7 +11,226 @@
 
 ---
 
-## Estado actual — 2026-05-21 (sesión 32): barrido loss/lr/regularización sobre la arquitectura limpia — techo inductivo ~0.40, colapso confirmado como arquitectónico
+## Estado actual — 2026-05-24 (sesión 34): instrumentación causal — el techo 0.40 es **overfit estructural DISTRIBUIDO**, no localizado
+
+### Resumen ejecutivo
+
+Después de 30+ sesiones de cambios arquitectónicos a ciegas, se implementó instrumentación rigurosa
+para entender **por qué** el techo inductivo es ~0.40 en WN18RR ind v1. Tres experimentos
+encadenados:
+
+1. **Trayectoria + cirugía de pesos** sobre baseline BCE-128 + lr 1e-5 (30 epochs, 30 ckpts).
+2. **Estratificación de queries** por features estructurales (grado, distancia, freq relación).
+3. **Experimento de freeze**: cargar pesos ep6 (pico), congelar los 3 weights identificados como
+   "culpables causales", continuar 30 epochs, medir si la decadencia se detiene.
+
+**Conclusión central**: el overfit inductivo NO está en uno o pocos parámetros — está **distribuido
+entre toda la clase de pesos que leen `h`** (W_K, W_V, W_Q, FFN, gates, proj_q/k/e/vg). Ningún
+freeze localizado puede curarlo; las únicas vías son arquitectónicas (eliminar la lectura de `h`)
+o de aceptar el bar del manuscrito ("competitivo con NBFNet", no "superar").
+
+### Infraestructura agregada
+
+- `cfg.train.ckpt_every_epoch` (default False): guarda `ckpt_epoch_{N:03d}.pt` adicional al
+  rolling `ckpt.pt`.
+- `cfg.train.start_from_ckpt` (default ''): carga `model_state_dict` antes de entrenar
+  (optimizer/scheduler frescos).
+- `cfg.train.freeze_patterns` (default ''): regex CSV; params cuyos nombres matchean quedan
+  `requires_grad=False` y se excluyen del optimizer.
+- `scripts/diagnose_inductive.py`: 4 modos (`structural`, `norms`, `per_query`, `surgery`).
+  Salida en `analysis/diag_*/`.
+
+Sin impacto en configs existentes (todos los flags default no-op).
+
+### Cirugía de pesos (test_mrr base ep20 = 0.310, source ep6 = 0.402)
+
+Sustituir SOLO los params matcheados por su versión ep6 sobre el modelo ep20:
+
+| Pattern | n params | Δ test_mrr |
+|---------|----------|------------|
+| `^layers\.` (todo) | 90 | **+0.0794** (recupera 87% del gap) |
+| `proj_q` | 5 | **+0.0535** |
+| `self_attn.K.weight` | 5 | **+0.0522** |
+| `shared_rel_emb_table` | 5 | **+0.0391** |
+| `ff_linear` | 20 | +0.0117 |
+| `self_attn.Q` | 5 | +0.0083 |
+| `encoder.*`, `post_mp.*`, `proj_k/e` | varios | ≈0 (irrelevantes) |
+| `self_attn.V` | 5 | **-0.0119** (ep20 es MEJOR que ep6) |
+| `V_gate` | 5 | **-0.0286** (ep20 estrictamente mejor) |
+
+**Validación independiente — `||W||_F` ep6 → ep20**:
+- `proj_q.weight` (capas 1-4): **+105% a +135%**
+- `shared_rel_emb_table`: +81%
+- `proj_e`, `proj_k`: +80-96% (pero la cirugía muestra Δ≈0 → crecer no implica dañar)
+
+### Estratificación de queries (test split, comparando ep6 vs ep20)
+
+**A1 — por grado del tail**:
+| Bin | n | MRR ep6 | MRR ep20 | Δ |
+|-----|---|---------|----------|---|
+| ≤2 (cold) | 63 | 0.173 | 0.143 | -0.030 |
+| 5-8 | 97 | 0.427 | 0.350 | -0.078 |
+| **9-16** | 114 (30%) | **0.588** | **0.377** | **-0.212** |
+| 17-32 | 33 | 0.549 | 0.441 | -0.108 |
+
+La masa del declive está en **tails bien conectados** (grado 9-16), NO en los cold-start.
+
+**A2 — por distancia h→t**:
+| sp | n | MRR ep6 | MRR ep20 | Δ |
+|----|---|---------|----------|---|
+| **=1** | 262 (70%) | 0.471 | 0.324 | **-0.146** |
+| =2 | 38 | 0.373 | 0.519 | +0.146 |
+| ≥4 | 24 | 0.01 | 0.01 | 0 |
+
+El declive es en **vecinos directos**. Distancia ≥4 nunca aprende (techo path-reasoning fijo).
+
+**A3 — por frecuencia de la relación en train**:
+| Bin | n | MRR ep6 | MRR ep20 | Δ |
+|-----|---|---------|----------|---|
+| 101-500 | 26 | 0.164 | **0.365** | **+0.200** |
+| 501-2000 | 50 | 0.037 | 0.092 | +0.055 |
+| **>2000 (comunes)** | 298 (79%) | 0.486 | 0.344 | **-0.142** |
+
+Es **rebalanceo**: el modelo gana en relaciones intermedias y pierde en comunes; como las comunes
+dominan el set, la media cae.
+
+**A4 — per-query**: 40.7% mejoran, **44.9% empeoran**, 14.4% iguales. Top-10 más degradadas: TODAS
+con rel_freq ≥ 1536 (común), tail_degree ≤4, sp=-1 o ≥5. Queries sobre relaciones comunes pero
+estructuralmente lejanas en test graph.
+
+### Drift de calibración (no es divergencia, es desbalance)
+
+De ep6 a ep29: **MRR baja** (test -0.080) pero **H@10 sube** (test +0.075). El modelo gana cobertura
+en top-10 mientras pierde precisión en top-1. No es colapso — es **rebalanceo de la distribución
+de puntuaciones**.
+
+### Experimento de freeze (test causal definitivo)
+
+Cargado ep6 (val=0.296, test=0.402); congelados `proj_q + self_attn.K.weight + shared_rel_emb_table`
+(15/97 params); reentrenamiento 30 epochs con mismo recipe (BCE-128 + lr 1e-5 + warmup 8 + cosine).
+
+| ep | test_mrr baseline | test_mrr freeze | Δ |
+|----|---------|----------|---|
+| 0 (= ep6 loaded) | 0.006 | 0.402 | — |
+| 6 (peak LR) | 0.402 | 0.340 | freeze pierde rápido |
+| 20 | 0.311 | 0.337 | freeze **+0.026** |
+| **29 (final)** | **0.323** | **0.346** | **+0.023** |
+
+| best-by-val | val | test |
+|-------------|-----|------|
+| baseline ep6 | 0.293 | 0.402 |
+| freeze ep0 | 0.296 | 0.402 (= peso cargado) |
+
+**Veredicto de las 3 hipótesis pre-experimento**:
+- (a) "estable en 0.40" → **PARCIAL** — freeze cayó a 0.34, recuperó parcialmente a 0.346.
+- (b) "sube de 0.40" → **FALSO** — best-by-val es ep0, nunca supera el estado cargado.
+- (c) "declive sigue, drift relocates" → **PARCIAL TRUE** — V_gate/FFN/V/Q también drift, pero
+  menos individualmente.
+
+**Aritmética de drift distribuido**:
+- Suma de surgery individual (proj_q+K+shared_rel_emb_table) = +0.145 si independientes.
+- Surgery `^layers\.` (todo) = +0.079 (solapamiento + otros weights aportan negativamente).
+- Freeze (preventivo) = +0.023 final.
+- **Los otros 6+ grupos de pesos (V, V_gate, FFN, Q, encoder, head, norms) aportan ~70% del declive
+  acumulado**, ninguno con efecto individual >0.012.
+
+### Diagnóstico unificado
+
+El overfit inductivo es **estructuralmente distribuido**. Eliminar los 3 contribuidores mayores da
+~28% de mejora en la meseta tardía pero no resuelve el problema. No hay UN componente arquitectónico
+que cure — está la **clase entera** de canales que leen `h` (W_K, W_V, W_Q, FFN, gates,
+proj_q/k/e/vg), cada uno contribuyendo un poco.
+
+Esto **refuerza causalmente** el diagnóstico de sesión 32 ("canales de memorización de entidad")
+pero también **descarta la cirugía localizada** como solución.
+
+### Opciones restantes (post-instrumentación)
+
+Refutadas experimentalmente:
+- Tunear loss/lr/reg (sesión 32: 7/7 palancas en 0.40).
+- Reemplazar V o gate aisladamente (sesión 32: novw, FiLM).
+- Aumentar capacidad (sesión 33: d=128 colapsa test a 0.089).
+- Freeze localizado (esta sesión: +0.023 sobre baseline, no cura).
+
+Compatibles con el diagnóstico:
+1. **Ruta 2 con `x^(0) = 0` puro**: única forma de eliminar TODOS los canales `W(x)`
+   simultáneamente. Requiere reimplementar la `RelationalSparseLayer` ya descartada en sesión 33
+   pero con la decisión clave que no se probó (`x` no entra al stream).
+2. **Reframe al manuscrito**: el bar literal es "competitivo con NBFNet", no "superar". El 0.40
+   final con H@10=0.77 es defendible como Etapa 1 si se reframea. Avanzar a Etapa 2 (relacional
+   transferible) donde la contribución es genuinamente nueva.
+3. **Multigraph training**: adelanta Etapa 3 parcialmente. Diversidad estructural puede romper
+   shortcuts train-específicos.
+
+### Archivos tocados
+
+- `config.py`: 2 flags nuevos.
+- `main.py`: load_state_dict + freeze_patterns + filtrado de optimizer (~25 líneas).
+- `train/trainer.py`: opcional saving per-epoch (~3 líneas).
+- `scripts/diagnose_inductive.py` (nuevo, ~330 líneas).
+- `plan_diagnostico_inductivo.md` (nuevo, 8.7KB — escrito ANTES de los experimentos).
+- `analysis/diag_bce128_lr1e5/`: CSVs (per_query, structural, weight_norms, surgery).
+- `analysis/ckpts_baseline_bce128_lr1e5/`: ep6 y ep20 ckpts respaldados.
+- `results/wn18rr_ind_v1_bce128_lr1e5/0/`: 30 ckpts per-epoch (baseline re-run).
+- `results/wn18rr_ind_v1_bce128_lr1e5-freeze_pqK_st/0/`: 30 ckpts del freeze.
+
+---
+
+## Estado anterior — 2026-05-23/24 (sesión 33): Ruta 2 implementada, probada y **REVERTIDA** — vuelta a `arch clean` (b3cfcf0)
+
+### Resumen ejecutivo
+
+Se implementó la `RelationalSparseLayer` propuesta en `propuesta_arquitectura_relacional.md` (Ruta 2: streams Q/K y V frescos estilo KnowFormer + atención dispersa sobre `H = KG ∪ expander`). Cuatro corridas en WN18RR ind v1 mostraron una propiedad cualitativa interesante (test_mrr > val_mrr, firma de mecanismo relacional puro sin memorización de entidades) pero el **techo absoluto se quedó en ~0.32 test MRR**, muy lejos del objetivo autoimpuesto ≥0.70. Después del análisis de opciones, **se decidió revertir todo el trabajo de sesiones 32 y 33** al estado limpio de sesión 31 (commit `b3cfcf0 arch clean`) y reconsiderar la dirección con cabeza fresca.
+
+### Resultados de los 4 runs (para no repetir)
+
+WN18RR ind v1, 1×H100, BCE-128 + warmup 8 salvo donde se indica, best-by-val:
+
+| Run | Config | Params | Best ep | val_mrr | test_mrr | val_H@10 | test_H@10 | Dinámica |
+|-----|--------|--------|---------|---------|----------|----------|-----------|----------|
+| 21-05 17:32 | d64, qk=v=2, lr 1e-5, ε=0.1 | 456K | ep12 (cortado) | 0.213 | 0.248 | 0.417 | 0.529 | aún subiendo cuando se cortó |
+| **23-05 19:53** | idem, 30 ep completos | 456K | **ep5** | **0.233** | **0.319** | 0.521 | **0.700** | pico ep5-6 → meseta val ~0.20 |
+| 23-05 20:25 | + lr 1e-4 | 456K | ep1 (cortado) | 0.193 | 0.220 | 0.409 | 0.444 | crash ep1→ep2 (pico transitorio test 0.297) |
+| 23-05 20:37 | d128, qk=v=3, lr 1e-4 | 2.1M | ep10 | 0.233 | **0.089** | 0.396 | 0.391 | val OK, **test colapsa** (0.089 best, 0.019 final ep39) |
+
+Logs preservados en `logs/relational_*.out` (4 archivos).
+
+### Lo que la Ruta 2 sí mostró (hallazgo cualitativo, vale guardarlo)
+
+En el run estable (23-05 19:53), **test_mrr (0.319) > val_mrr (0.233)** — ratio invertido vs **toda** arquitectura previa, donde val ≥ test consistentemente. En inductivo WN18RR, `val` se evalúa sobre el grafo de train (entidades conocidas) y `test` sobre grafo disjunto. Que `test > val` es la firma esperada de un mecanismo relacional puro que no memoriza la distribución de entidades del train graph. **Esto valida el diagnóstico de sesión 32** sobre los canales de memorización de entidad — son reales — pero también muestra que **eliminarlos no basta para llegar a 0.70**.
+
+### Lo que la Ruta 2 no resolvió
+
+- **Objetivo intermedio >0.58 MRR: no alcanzado** (techo 0.32 test_mrr).
+- **Meseta val (~0.20) está debajo** del techo previo 0.40 de la arquitectura BCE128 limpia. La generalización mejoró (ratio invertido), pero la magnitud absoluta retrocedió.
+- **Más capacidad (d=128, qk/v=3) empeoró catastróficamente** — overfit estructural disfrazado: val=0.233 pero test=0.089 best-by-val, 0.019 al final ep39.
+- **lr 1e-4 reintrodujo el crash ep1→ep2** (mismo patrón persistente desde sesión 30).
+
+### Hipótesis no probadas (para futuras iteraciones, si se vuelve a esta dirección)
+
+1. **`x^(0) = 0` puro al estilo KnowFormer**: los streams Q/K y V leen `x` acumulada vía `fc_qk_in([x, ε])` / `fc_v_in([x, onehot])`. Aunque el RSPMM interno es relacional, el contenido inicial reintroduce información de entidad. KnowFormer arranca con `x^(0)=0`; nuestro `KGCNodeEncoder` sigue inyectando boundary relacional. Probable canal de fuga.
+2. **Ablación expander on/off** sobre la Ruta 2: nunca se midió. Era el experimento más informativo independiente del MRR (valida o refuta P2 del manuscrito). **Quedó sin hacer.**
+3. **Over-propagation**: 5 capas × 2 iters Q/K × 2 iters V = ~20 propagaciones relacionales internas (KnowFormer: 6×2=12). No probado.
+
+### Por qué se revirtió (decisión del usuario, 2026-05-24)
+
+La Ruta 2 produjo un avance cualitativo real pero no cierra el gap cuantitativo en una iteración. El gap entre el techo medido (0.32) y el objetivo (0.70) es lo suficientemente grande como para que las ablaciones restantes (x^(0)=0, expander on/off, L menor) tengan baja probabilidad subjetiva de cerrarlo. Antes de invertir más esfuerzo en pulir la Ruta 2, conviene volver al estado limpio y replantear la estrategia (incluyendo si el bar ≥0.70 es el adecuado para Etapa 1 — el manuscrito solo exige "competitivo con NBFNet", no superarlo; ver lectura del manuscrito en sesión 32).
+
+### Estado del repo post-revert
+
+- **Código**: `git checkout b3cfcf0 -- config.py layer/exphormer.py network/heads.py network/model.py`. Arquitectura limpia de sesión 31 (Q anclado a x0, K/V/FFN estándar entity-aware, gate aditivo sin sigmoid, BF residual, FFN inner 2d, tablas separadas).
+- **Eliminado**: `layer/relational_layer.py` y las 8 configs de sesiones 32+33 (`wn18rr_ind_v1_relational*.yaml`, `wn18rr_ind_v1_novw_bce128*.yaml`, `wn18rr_ind_v1_krel_bce128_lr1e5.yaml`, `wn18rr_ind_v1_novw_film*.yaml`).
+- **Configs vivos**: los de sesión 31 — `wn18rr_ind_v1.yaml`, `wn18rr_ind_v1_bce128.yaml`, `wn18rr_ind_v1_bce128_lr1e5.yaml`, `wn18rr_ind_v1_novw_c1*.yaml`, `wn18rr_ind_v1_novw_wu10.yaml`, etc. y los transductivos.
+- **Conservado para contexto**: `propuesta_arquitectura_relacional.md` (análisis del diseño), `manuscrito_candidatura.md` (tesis), `papers_distilled.md`.
+- **Flags revertidos**: ya no existen `gt.use_w_v`, `gt.gate_film`, `gt.k_relational`, `gt.num_qk_layers`, `gt.num_v_layers`, `gt.qk_noise_std`, `kgc.bilinear_scorer`, `gt.layer_type='RelationalSparse'`.
+
+### Próximo paso
+
+Re-planificar la estrategia partiendo del estado limpio. Las dos preguntas abiertas son (a) ¿es ≥0.70 el bar correcto para Etapa 1 o "competitivo con NBFNet" del manuscrito es suficiente?, (b) si se sigue persiguiendo el gap, ¿hacia dónde? — recuperar K-solo-query con flag por-setting (Ruta 1 fallback, ~0.58), volver a Ruta 2 con `x^(0)=0` puro, o adoptar atención densa estilo KnowFormer como diagnóstico.
+
+---
+
+## Estado anterior — 2026-05-21 (sesión 32): barrido loss/lr/reg → code-read profundo → objetivo ≥0.70 → Pasos 1 (novw, refutado) y 2 (gate multiplicativo, lanzado)
 
 ### Contexto
 Revisión completa de `papers_distilled.md`, `manuscrito_candidatura.pdf` y `metodologia.tex`.
@@ -46,8 +265,58 @@ El análisis viejo ("dos rutas de inyección del ancla → inestabilidad") es **
 ### Configs nuevos
 `configs/Exphormer/wn18rr_ind_v1_bce128_lr1e5.yaml` (mejor inductivo limpio: 0.40), `wn18rr_ind_v1_bce128_lr1e5_reg.yaml` (sobre-regulariza, NO usar tal cual — wd 1e-2 fuera de rango).
 
-### Decisión pendiente (interrumpida)
-(a) probar negativos 2¹⁰-2¹² como última palanca de loss en rango KnowFormer, (b) aceptar ~0.40 como número unificado de Etapa 1 (defendible: el manuscrito solo pide "competitivo"), o (c) instrumentar grado↔rank para confirmar el atajo estructural antes de cualquier decisión de Etapa 2.
+### Nuevo objetivo fijado por el usuario (segunda mitad de la sesión)
+**El inductivo WN18RR v1 DEBE llegar a ≥0.70 MRR** para ser comparable/útil. Se abandona "aceptar 0.40". Se hizo un **code-read profundo** de todo el pipeline buscando bugs o cosas no examinadas.
+
+### Code-read profundo — NO hay bug que tope en 0.40
+Verificados y correctos: eval inductivo cambia bien al grafo de test (`trainer.py:257-264`), head+tail vía recíprocos con `head_filter`, drop de aristas directas vectorizado (`trainer.py:507-511`), ancla bien indexada (`node_encoders.py:227`), loss CE y BCE correctos. **0.40 es un techo real**, no error de medición (el transductivo usa el mismo pipeline y llega a 0.566).
+
+Dos cosas que SÍ se habían pasado por alto:
+1. **El reset (sesión 31) adoptó la PEOR arquitectura inductiva**: restauró `V=W_V(h)` + K estándar para clonar el transductivo 0.566. Pero `novw` (sin W_V) dio 0.5802 histórico y K-solo-query 0.578 — ambos >> 0.40 actual. Al resetear, regresamos el inductivo.
+2. **Scorer degenerado en la query** (`heads.py:107`): `Linear(cat(h_v, r_q))` → el término de `r_q` es constante sobre todas las entidades, no afecta el ranking. Las 11 relaciones se rankean con la MISMA dirección lineal de `h_v`. (Mismo espíritu que NBFNet, que hornea la query en `h_v`; candidato a Paso 3 = scorer bilineal.)
+
+### Paso 1 implementado y REFUTADO — `novw` (flag `gt.use_w_v`, default True)
+`V = h` directamente (sin `W_V`). Cambio unificado (mismo forward ambos settings). 258,561 params (−20,480). Threading `MultiModel→MultiLayer→GlobalModel→ExphormerAttention`.
+
+| Run novw | lr/warmup | best-by-val | pico | final | dinámica |
+|---|---|---|---|---|---|
+| `novw + BCE-128` | 1e-5 / 8, 60ep | ep40 **0.367** | ep5 0.406 | 0.357 | meseta ~0.36, estable |
+| `novw + BCE-128` | 8e-4 / 3, 30ep | ep1 **0.325** | ep1 0.325 | 0.023 | pico transitorio → crash |
+
+**Refutada la hipótesis "subentrenamiento era el techo".** Bajo entrenamiento estable, `novw ≈ W_V` (ambos mesetean ~0.40). El **0.58 histórico era un pico transitorio de ep1 (CE + lr 8e-4)**, capturado por val-selection antes del crash — NO una capacidad convergida. Y **BCE mató el spike de novw** (CE+novw=0.58 vs BCE+novw=0.32 a lr alto). Ninguna combinación loss×lr×novw rompe el techo → el cuello está en la **composición relacional del mensaje**, no en V ni en el loss.
+
+Tabla resumen del techo (robusto):
+| Régimen | W_V | novw |
+|---|---|---|
+| lr bajo (estable) | meseta 0.40 | meseta 0.40 |
+| lr alto (transitorio ep1) | 0.39 (BCE) / 0.23 (CE) | 0.58 (CE) / 0.32 (BCE) |
+
+### Paso 2 implementado y LANZADO — gate multiplicativo (flag `gt.gate_film`, default False)
+`metodologia.tex` §8.4 "Dirección propuesta": `V_w = h_w ⊙ Z(r_wv, q)`. El gate actual SUMA relación+query (`V_gate(φr) + proj_vg(q)`), no captura su **interacción**. Paso 2: `gate = V_gate(φr) ⊙ (1 + proj_vg(q))` (FiLM, cruce r_uv × q, identidad al init). Sobre `novw`, régimen estable.
+
+- Config: `configs/Exphormer/wn18rr_ind_v1_novw_film_bce128.yaml` (use_w_v False + gate_film True + BCE-128 + lr 1e-5 + 60ep).
+- **Job `blgjtqf58` corriendo** al cierre. Smoke test exit 0, 258,561 params.
+- Predicción: si el gate multiplicativo mejora la composición relacional, debe subir la **meseta estable** por encima de 0.40 (mejora estable, no spike transitorio). Si no mueve la meseta → ir a Paso 3 (scorer bilineal por-query).
+
+### Configs nuevos de la sesión
+`bce128_lr1e5.yaml`, `bce128_lr1e5_reg.yaml` (no usar, sobre-regulariza), `novw_bce128.yaml`, `novw_bce128_lr8e4.yaml`, `novw_film_bce128.yaml`. Flags nuevos: `gt.use_w_v` (default True), `gt.gate_film` (default False) — ningún config existente cambia de comportamiento.
+
+### Paso 2 (gate multiplicativo) y Paso 3 (scorer bilineal) — ambos REFUTADOS
+- **Paso 2** (`novw + FiLM gate`, flag `gt.gate_film`): best-by-val ep40 **0.356** (vs novw 0.367). Idéntico. El cruce r×q no es el cuello.
+- **Paso 3** (`+ scorer bilineal`, flag `kgc.bilinear_scorer`): best-by-val ep9 **0.353**. Cambia la dinámica (val/test se siguen) pero mismo techo. El scorer degenerado tampoco era el cuello.
+
+### CONCLUSIÓN de sesión 32: 7/7 palancas unificadas → ~0.40. Camino actual agotado.
+El techo ~0.40 es invariante a loss/lr/warmup/reg/novw/gate-mult/scorer. El cuello son los **canales de memorización de entidad** (`K=W_K(h)`, `V` deriva de `h`, `FFN(h)`); ninguna palanca que no los toque mueve nada. Lo único que sube el inductivo (K-solo-query → 0.58) rompe el transductivo (0.0003). **Tensión fundamental**: una arquitectura unificada solo es buena en ambos settings si NO tiene canales de entidad (como NBFNet 0.551/0.741 y KnowFormer 0.579/0.752).
+
+### DECISIÓN del usuario: comprometerse con la Ruta 2 (arquitectura relacional pura)
+Atención dispersa expander (Exphormer) + mensajes desde streams relacionales frescos estilo KnowFormer (sin leer `h`, sin BF residual). Única ruta con evidencia de ≥0.70, unificada de verdad, y dirección real de la tesis (fusiona Etapa 2). **Documento de diseño completo: `propuesta_arquitectura_relacional.md`** (motivación, arquitectura+pseudocódigo, diferencias vs KnowFormer/Exphormer/NBFNet, plan de implementación, lecciones de V-NBF, puente a Etapas 2-3).
+
+### Pendiente (próxima sesión)
+- Implementar `layer/relational_layer.py` (`RelationalSparseLayer`): streams Q/K y V frescos (RSPMM DistMult), atención dispersa sobre H, sin BF residual. Ver §7 del documento.
+- Validar inductivo v1 primero (recipe estable BCE-128 + lr 1e-5): objetivo intermedio >0.58, final ≥0.70.
+- Ablación del expander sobre la nueva arquitectura (ahora SÍ debería importar — valida la contribución de tesis).
+- Verificación transductiva (4 GPUs, pospuesta).
+- Configs nuevos de los pasos 2-3: `novw_film_bce128.yaml`, `novw_film_bil_bce128.yaml`. Flags: `gt.gate_film`, `kgc.bilinear_scorer` (defaults no cambian nada).
 
 ---
 

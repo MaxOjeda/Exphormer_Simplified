@@ -196,6 +196,9 @@ cfg.train.ckpt_clean = True
 cfg.train.max_iter = 0          # 0 = no limit; set >0 to stop after N batches (debug)
 cfg.train.grad_checkpoint = False  # True: per-layer gradient checkpointing (saves memory)
 cfg.train.ckpt_monitor_split = 'val'  # 'val' or 'test' — split used for ckpt_best selection
+cfg.train.ckpt_every_epoch = False  # True: also save ckpt_epoch_{N:03d}.pt each epoch (for diagnostics)
+cfg.train.start_from_ckpt = ''      # Optional: path to .pt; loads model_state_dict only before training
+cfg.train.freeze_patterns = ''      # Comma-separated regex; params whose name matches are frozen
 
 # ---------------------------------------------------------------------------
 # WandB
